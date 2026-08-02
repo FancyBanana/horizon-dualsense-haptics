@@ -131,6 +131,7 @@ audio-sink=dualsense
 The available options are:
 
 ```text
+--help                     Show usage and exit
 --motor-mode simple|audio   Select the haptic backend
 --bluetooth                 Force simple rumble mode and disable USB audio
 --audio-sink <substring>    Select the matching SDL audio device
