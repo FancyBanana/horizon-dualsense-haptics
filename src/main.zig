@@ -10,7 +10,8 @@ const config = @import("config.zig");
 
 const print = std.debug.print;
 
-const MAX_FRAME_GAP_MS: u32 = 250; // do not stall on pauses in a capture
+/// Maximum replay delay for a gap between captured telemetry frames.
+const MAX_FRAME_GAP_MS: u32 = 250;
 
 /// App-owned runtime state: the audio backend must outlive the haptics object
 /// that references it, so both live on the caller's stack and are wired up
@@ -21,21 +22,35 @@ const App = struct {
     cfg: config.Config = .{},
 };
 
+/// Parsed command-line flags and values shared by all runtime modes.
 const CommandLineArgs = struct {
+    /// Print a bundled packet and exit.
     selftest: bool = false,
+    /// Replay captured packets through the controller.
     replay: bool = false,
+    /// Emit an audio channel test tone.
     audio_test: bool = false,
+    /// Optional channel number for `--audio-test`.
     audio_test_channel: ?[]const u8 = null,
+    /// Repeat replay mode indefinitely.
     loop: bool = false,
+    /// Requested `simple` or `audio` motor mode.
     motor_mode: ?[]const u8 = null,
+    /// Force simple rumble mode for a Bluetooth controller.
     bluetooth: bool = false,
+    /// Substring used to select the SDL audio device.
     audio_sink: ?[]const u8 = null,
+    /// Audio output gain before rendering.
     audio_gain: ?[]const u8 = null,
+    /// Replay speed multiplier.
     speed: ?[]const u8 = null,
+    /// Save received telemetry packets using the default limit.
     save_packets: bool = false,
+    /// Maximum number of packets to save.
     capture_count: ?u32 = null,
 };
 
+/// Runs the selected runtime mode.
 pub fn main(init: std.process.Init) !void {
     const args = try parseCommandLine(init);
     if (args.selftest) {
@@ -61,6 +76,7 @@ pub fn main(init: std.process.Init) !void {
     });
 }
 
+/// Parses one validated telemetry datagram and sends its effects to the device.
 fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
     const self: *haptics.Haptics = @ptrCast(@alignCast(ctx));
     var packet: [parser.PACKET_SIZE]u8 = undefined;
@@ -86,6 +102,7 @@ fn setupApp(init: std.process.Init, app: *App, args: CommandLineArgs) !void {
     }
 }
 
+/// Applies command-line configuration values over the loaded config file.
 fn applyCommandLineOverrides(args: CommandLineArgs, cfg: *config.Config) !void {
     if (args.motor_mode) |v| {
         cfg.mode = config.MotorMode.parse(v) orelse {
@@ -106,6 +123,7 @@ fn applyCommandLineOverrides(args: CommandLineArgs, cfg: *config.Config) !void {
     }
 }
 
+/// Parses argv once and returns values shared by all application modes.
 fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
     var args = CommandLineArgs{};
     var it = std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa) catch return error.OutOfMemory;
@@ -146,6 +164,7 @@ fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
     return args;
 }
 
+/// Returns the next argument, including one deferred by optionValue().
 fn nextArgument(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const u8 {
     if (pending.*) |arg| {
         pending.* = null;
@@ -154,6 +173,7 @@ fn nextArgument(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const 
     return it.next();
 }
 
+/// Reads an option value without consuming the next option as its value.
 fn optionValue(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const u8 {
     const value = nextArgument(it, pending) orelse return null;
     if (std.mem.startsWith(u8, value, "--")) {
@@ -163,6 +183,7 @@ fn optionValue(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const u
     return value;
 }
 
+/// Copies an argument into the process arena for use after iterator cleanup.
 fn copyArg(init: std.process.Init, value: []const u8) ![]const u8 {
     return init.arena.allocator().dupe(u8, value);
 }

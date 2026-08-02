@@ -2,6 +2,7 @@
 
 const std = @import("std");
 
+/// Defines the executable, test targets, SDL dependency, and run step.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -79,8 +80,7 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-/// Gives a module what it needs to `@cImport` and link the statically built
-/// SDL3: libc, the SDL3 headers, and the SDL3 library itself.
+/// Gives a module the SDL3 headers, libc linkage, and static SDL3 library.
 fn wireSdl(m: *std.Build.Module, sdl: *std.Build.Dependency) void {
     m.link_libc = true;
     m.addIncludePath(sdl.path("include"));

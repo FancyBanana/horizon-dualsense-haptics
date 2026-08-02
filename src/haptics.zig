@@ -45,11 +45,13 @@ pub const Params = struct {
     low_speed_mps: f32 = 5.0, // below this trust wheel rotation, not slip
 };
 
+/// Per-side audio intensity and frequency produced from telemetry.
 const AudioCue = struct {
     amp: f32 = 0,
     freq: f32 = 90,
 };
 
+/// Converts telemetry frames into DualSense HID and audio effects.
 pub const Haptics = struct {
     device: device.Device = .{},
     params: Params = .{},
@@ -115,6 +117,7 @@ pub const Haptics = struct {
         self.device.close();
     }
 
+    /// Opens the controller when needed, throttling repeated discovery attempts.
     fn ensureConnected(self: *Haptics, io: Io) void {
         if (!self.device.connected()) {
             const now = nowMillis(io);
@@ -132,6 +135,7 @@ pub const Haptics = struct {
         }
     }
 
+    /// Adds the report flags required to route haptics through USB audio.
     fn configureAudioReport(self: *const Haptics, report: *ds.OutputReport) void {
         if (self.motor_mode != .audio) return;
 
@@ -172,6 +176,7 @@ pub const Haptics = struct {
         audio_backend.setActive(racing);
     }
 
+    /// Maps surface rumble to classic motor bytes in simple mode.
     fn updateMotors(self: *const Haptics, frame: *const parser.HorizonFrame, report: *ds.OutputReport) void {
         // Forza SurfaceRumble is a 0..1 per-wheel road-surface force.
         const l = max2(frame.SurfaceRumbleFl, frame.SurfaceRumbleRl);
@@ -187,6 +192,7 @@ pub const Haptics = struct {
         }
     }
 
+    /// Starts a short vibration burst when the reported gear changes.
     fn updateGearShift(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) void {
         if (self.prev_gear) |prev| {
             if (prev != frame.Gear) {
@@ -238,12 +244,14 @@ pub const Haptics = struct {
         return ds.effectRigid(ramp(frame.Accel, p.throttle_deadzone, p.throttle_max_force));
     }
 
+    /// Detects wheel lock from tire slip values during braking.
     fn isLockingUp(self: *const Haptics, frame: *const parser.HorizonFrame) bool {
         const p = self.params;
         return maxAbs4(frame.TireSlipRatioFl, frame.TireSlipRatioFr, frame.TireSlipRatioRl, frame.TireSlipRatioRr) >= p.abs_slip_ratio_threshold or
             maxAbs4(frame.TireCombinedSlipFl, frame.TireCombinedSlipFr, frame.TireCombinedSlipRl, frame.TireCombinedSlipRr) >= p.abs_combined_slip_threshold;
     }
 
+    /// Detects wheelspin using slip at speed or rotation at low speed.
     fn wheelSpinning(self: *const Haptics, frame: *const parser.HorizonFrame) bool {
         const p = self.params;
         if (frame.Speed > p.low_speed_mps) {
@@ -253,6 +261,7 @@ pub const Haptics = struct {
         return maxAbs4(frame.WheelRotationSpeedFl, frame.WheelRotationSpeedFr, frame.WheelRotationSpeedRl, frame.WheelRotationSpeedRr) >= p.burnout_rot_threshold;
     }
 
+    /// Converts tire slip into a wheelspin vibration frequency.
     fn wheelspinFreq(self: *const Haptics, frame: *const parser.HorizonFrame) u8 {
         const p = self.params;
         const slip = maxAbs4(frame.TireCombinedSlipFl, frame.TireCombinedSlipFr, frame.TireCombinedSlipRl, frame.TireCombinedSlipRr);
@@ -269,6 +278,7 @@ pub const Haptics = struct {
     }
 };
 
+/// Combines one side's surface, slip, strip, puddle, and wheel-speed inputs.
 fn sideAudioCue(surface: f32, wheel_rotation: f32, combined_slip: f32, on_strip: bool, puddle: f32) AudioCue {
     const safe_surface = finiteOrZero(surface);
     const safe_rotation = finiteOrZero(wheel_rotation);
@@ -289,6 +299,7 @@ fn sideAudioCue(surface: f32, wheel_rotation: f32, combined_slip: f32, on_strip:
     return .{ .amp = amp, .freq = freq };
 }
 
+/// Converts a normalized rumble value to a DualSense motor byte.
 fn scaleMotor(v: f32) u8 {
     return @intFromFloat(std.math.clamp(finiteOrZero(v), 0, 1) * 255.0);
 }
@@ -318,20 +329,24 @@ fn zoneAmp(a: u8) u8 {
     return @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(a)) / 255.0 * 8.0, 1, 8));
 }
 
+/// Returns the greater finite value, treating invalid values as zero.
 fn max2(a: f32, b: f32) f32 {
     const left = finiteOrZero(a);
     const right = finiteOrZero(b);
     return if (left > right) left else right;
 }
 
+/// Replaces a non-finite telemetry value with zero.
 fn finiteOrZero(value: f32) f32 {
     return if (std.math.isFinite(value)) value else 0;
 }
 
+/// Returns the largest absolute value among four inputs.
 fn maxAbs4(a: f32, b: f32, c: f32, d: f32) f32 {
     return max2(max2(@abs(a), @abs(b)), max2(@abs(c), @abs(d)));
 }
 
+/// Returns monotonic time for gear-shift timing.
 fn nowMillis(io: Io) i64 {
     return platform.nowMillis(io);
 }

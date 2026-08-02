@@ -16,6 +16,56 @@ The project supports two motor backends:
 The Linux implementation uses `/dev/hidraw` for controller reports and SDL3
 for audio. The Windows HID layer is currently a stub.
 
+## Architecture
+
+The live application processes one telemetry datagram at a time. The parser
+turns the fixed 324-byte packet into a typed `HorizonFrame`; the haptics layer
+then derives trigger, rumble, and audio effects from that frame.
+
+```mermaid
+flowchart LR
+    Game["Forza Horizon 5"] -->|324-byte UDP| Listener["udp_listener.zig<br/>127.0.0.1:8800"]
+    Listener --> Main["main.zig<br/>processFrame"]
+    Main --> Parser["packet_parser.zig"]
+    Parser --> Frame["HorizonFrame"]
+    Frame --> Mapping["haptics.zig<br/>Haptics mapping"]
+
+    Mapping --> Report["dualsense.zig<br/>OutputReport"]
+    Report --> Selector["device.zig<br/>platform selector"]
+    Selector --> Linux["device_linux.zig<br/>/dev/hidraw"]
+    Selector --> Windows["device_windows.zig<br/>stub"]
+
+    Mapping --> Audio["audio.zig<br/>SDL3 renderer"]
+    Audio --> AudioDevice["audio_device.zig<br/>SDL device matching"]
+    AudioDevice --> USBAudio["DualSense USB audio"]
+```
+
+The selected motor backend determines how the mapped effects reach the
+controller. Simple mode uses classic HID rumble bytes and works over USB or
+Bluetooth. Audio mode sends synthesized four-channel USB audio; HID reports
+are still used for trigger effects and audio routing flags.
+
+```mermaid
+flowchart TD
+    File["forza-haptics.conf<br/>(optional)"] --> Config["config.zig<br/>Config.load"]
+    CLI["command-line options"] --> Config
+    Config --> Mode{"Motor mode"}
+    Mode -->|simple| Simple["Classic rumble bytes"]
+    Mode -->|audio| AudioMode["Amplitude + frequency cues"]
+
+    Simple --> HID["DualSense HID report"]
+    AudioMode --> Synth["SDL3 audio synthesis"]
+    AudioMode --> Routing["HID trigger/audio routing report"]
+
+    Synth --> USB["DualSense USB audio<br/>rear channels = haptic actuators"]
+    Routing --> USBHID["DualSense USB HID"]
+    HID --> USBHID
+    HID --> BTHID["DualSense Bluetooth HID"]
+```
+
+Audio mode requires USB because the haptic audio stream is a USB audio
+device. The `--bluetooth` option selects simple mode instead.
+
 ## Requirements
 
 - Zig 0.16.0 or newer

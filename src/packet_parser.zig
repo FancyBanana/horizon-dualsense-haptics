@@ -100,6 +100,7 @@ pub const HorizonFrame = struct {
     HorizonTrailingUnknown: u8 = 0,
 };
 
+/// Byte length of a Forza Horizon telemetry packet.
 pub const PACKET_SIZE = 324;
 
 comptime {
@@ -109,6 +110,7 @@ comptime {
 }
 
 /// Parses data from a Forza Horizon 5 telemetry packet.
+/// Decodes one fixed-size little-endian Horizon telemetry packet.
 pub fn parseHorizonPacket(data: [324]u8) HorizonFrame {
     var frame = HorizonFrame{};
     var offset: usize = 0;
@@ -124,6 +126,7 @@ pub fn parseHorizonPacket(data: [324]u8) HorizonFrame {
     return frame;
 }
 
+/// Converts a byte slice to a value while honoring the host byte order.
 fn readLittleEndian(comptime T: type, bytes: []const u8) T {
     const value = std.mem.bytesToValue(T, bytes);
     if (builtin.cpu.arch.endian() == .little) return value;

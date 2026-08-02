@@ -10,6 +10,7 @@ const std = @import("std");
 /// maps to CLOCK_MONOTONIC on Linux; the freshness envelope and reconnect
 /// throttling only need a clock that never jumps, so wall-clock changes can't
 /// leave a motor stuck on.
+/// Returns monotonic elapsed time in milliseconds.
 pub fn nowMillis(io: std.Io) i64 {
     return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }

@@ -8,15 +8,18 @@ const std = @import("std");
 const linux = std.os.linux;
 const ds = @import("dualsense.zig");
 
+/// Errors returned by Linux HID discovery and report writes.
 pub const Error = error{ DeviceNotFound, AccessDenied, WriteFailed, WouldBlock };
 
 const O_RDWR_NONBLOCK = linux.O{ .ACCMODE = .RDWR, .NONBLOCK = true };
 
+/// Linux DualSense device handle and transport state.
 pub const Device = struct {
     fd: linux.fd_t = -1,
     bus: ds.Bus = .usb,
     bt_sequence: u8 = 0,
 
+    /// Reports whether the hidraw file descriptor is open.
     pub fn connected(self: *const Device) bool {
         return self.fd >= 0;
     }
@@ -45,6 +48,7 @@ pub const Device = struct {
         return error.DeviceNotFound;
     }
 
+    /// Writes a USB report directly or wraps it in a Bluetooth report.
     pub fn writeReport(self: *Device, report: *const ds.OutputReport) Error!void {
         switch (self.bus) {
             .usb => return self.writeBytes(@ptrCast(report), ds.USB_REPORT_SIZE),
@@ -56,6 +60,7 @@ pub const Device = struct {
         }
     }
 
+    /// Closes the hidraw descriptor if one is open.
     pub fn close(self: *Device) void {
         if (self.fd >= 0) {
             _ = linux.close(self.fd);
@@ -63,6 +68,7 @@ pub const Device = struct {
         }
     }
 
+    /// Writes exactly one HID report, translating nonblocking errors.
     fn writeBytes(self: *const Device, bytes: [*]const u8, size: usize) Error!void {
         const rc = linux.write(self.fd, bytes, size);
         switch (linux.errno(rc)) {
@@ -87,6 +93,7 @@ fn dualsenseBus(io: std.Io, minor: u32) ?ds.Bus {
     return matchesHidId(read_buf[0..n]);
 }
 
+/// Matches a sysfs HID_ID line to a supported DualSense transport.
 fn matchesHidId(contents: []const u8) ?ds.Bus {
     var lines = std.mem.splitScalar(u8, contents, '\n');
     while (lines.next()) |line| {

@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ds = @import("dualsense.zig");
 
+/// Errors returned by the selected platform HID backend.
 pub const Error = ds.Error;
 
 const impl = switch (builtin.os.tag) {
@@ -18,6 +19,7 @@ const impl = switch (builtin.os.tag) {
 
 pub const Device = impl.Device;
 
+/// Opens the first supported DualSense device found by the platform backend.
 pub inline fn open(io: std.Io) Error!Device {
     return impl.Device.open(io);
 }

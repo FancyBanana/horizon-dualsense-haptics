@@ -5,18 +5,26 @@ const std = @import("std");
 // The DualSense USB/Bluetooth HID protocols and trigger-effect encodings.
 // Platform-specific device access lives in device.zig.
 
+/// Sony's USB vendor identifier.
 pub const VENDOR_ID: u16 = 0x054C;
-pub const PRODUCT_IDS = [_]u16{ 0x0CE6, 0x0DF2 }; // DualSense, DualSense Edge
+/// Product identifiers for DualSense and DualSense Edge controllers.
+pub const PRODUCT_IDS = [_]u16{ 0x0CE6, 0x0DF2 };
 
+/// Physical transport used for DualSense HID reports.
 pub const Bus = enum {
     usb,
     bluetooth,
 };
 
+/// USB output report identifier.
 pub const USB_REPORT_ID: u8 = 0x02;
+/// USB output report size in bytes.
 pub const USB_REPORT_SIZE: usize = 48;
+/// Bluetooth output report identifier.
 pub const BT_REPORT_ID: u8 = 0x31;
+/// Bluetooth output report size in bytes.
 pub const BT_REPORT_SIZE: usize = 78;
+/// Bluetooth output transport tag.
 pub const BT_OUTPUT_TAG: u8 = 0x10;
 const BT_CRC_SEED: u8 = 0xA2;
 
@@ -65,6 +73,7 @@ pub const Audio = struct {
 pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation, firmware 2.24+
 
 /// Trigger effect mode bytes (byte 0 of the 11-byte effect section).
+/// Trigger effect encoding understood by the DualSense firmware.
 pub const EffectMode = enum(u8) {
     reset = 0x05, // disengage the effect and withdraw the actuator
     rigid = 0x01, // uniform resistance: [start_pos, force]
@@ -110,6 +119,7 @@ pub const BtOutputReport = extern struct {
     reserved: [24]u8 = [_]u8{0} ** 24,
     crc: [4]u8 = [_]u8{0} ** 4,
 
+    /// Wraps a USB report in the Bluetooth transport envelope and CRC.
     pub fn fromUsb(report: *const OutputReport, sequence: u8) BtOutputReport {
         var bt: BtOutputReport = .{ .sequence = (sequence & 0x0F) << 4 };
         const usb_bytes = std.mem.asBytes(report);
@@ -140,6 +150,7 @@ fn bluetoothCrc(bytes: []const u8) u32 {
     return ~crc;
 }
 
+/// Updates a reflected CRC32 accumulator with the supplied bytes.
 fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
     var crc = initial;
     for (bytes) |byte| {
@@ -152,23 +163,28 @@ fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
     return crc;
 }
 
+/// Eleven-byte DualSense trigger effect payload.
 pub const Effect = [11]u8;
 
+/// Disables a trigger effect and releases the actuator.
 pub fn effectOff() Effect {
     return makeEffect(.reset, &.{});
 }
 
 /// Uniform resistance. `force` 0..255; 0 is a low force, not off.
+/// Creates a uniform trigger resistance effect.
 pub fn effectRigid(force: u8) Effect {
     return makeEffect(.rigid, &.{ 0, force });
 }
 
 /// Vibration. `freq` in Hz (0..255), `amp` 0..255.
+/// Creates a uniform trigger vibration effect.
 pub fn effectVibrate(freq: u8, amp: u8) Effect {
     return makeEffect(.vibrate, &.{ freq, amp });
 }
 
 /// Per-zone resistance. `zones` holds 10 strengths, 0 = inactive, 1..8 = resistance.
+/// Creates a trigger resistance effect with ten independent zones.
 pub fn effectRigidZones(zones: [10]u8) Effect {
     var e = makeEffect(.rigid_zones, &.{});
     e[1..7].* = packZones(zones);
@@ -176,6 +192,7 @@ pub fn effectRigidZones(zones: [10]u8) Effect {
 }
 
 /// Per-zone vibration. `zones` holds 10 amplitudes, 0 = inactive, 1..8 = amplitude.
+/// Creates a trigger vibration effect with ten independent zones.
 pub fn effectVibrateZones(zones: [10]u8, freq: u8) Effect {
     var e = makeEffect(.vibrate_zones, &.{});
     e[1..7].* = packZones(zones);
@@ -183,6 +200,7 @@ pub fn effectVibrateZones(zones: [10]u8, freq: u8) Effect {
     return e;
 }
 
+/// Builds an 11-byte effect payload from a mode and parameter bytes.
 fn makeEffect(mode: EffectMode, params: []const u8) Effect {
     var e: Effect = [_]u8{0} ** 11;
     e[0] = @intFromEnum(mode);
@@ -212,6 +230,7 @@ fn packZones(zones: [10]u8) [6]u8 {
     };
 }
 
+/// Errors shared by the platform HID implementations.
 pub const Error = error{ DeviceNotFound, AccessDenied, WriteFailed, WouldBlock };
 
 test "output report size" {

@@ -7,6 +7,7 @@
 //! SDL3/SDL_*.h headers without any system SDL. Only the audio subset is
 //! imported, which keeps `@cImport` and the linked library small.
 
+/// SDL3 C declarations used by the audio backend.
 pub const c = @cImport({
     @cInclude("SDL3/SDL_stdinc.h");
     @cInclude("SDL3/SDL_error.h");

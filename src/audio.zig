@@ -11,9 +11,6 @@
 //! the telemetry loop only has to publish per-channel intensities and the
 //! renderer produces the waveform.
 //!
-//! The DualSense playback device is located by matching a substring of its SDL
-//! device name (default "dualsense"), overridable with `--audio-sink`.
-//!
 //! Rendering pipeline per channel: clamp -> gamma low-boost -> attack/release
 //! envelope -> freshness envelope -> textured harmonic oscillator -> clamp.
 //! The freshness envelope fades the stream to silence a fixed time after the
@@ -25,6 +22,7 @@ const sdl = @import("sdl_c.zig");
 const c = sdl.c;
 const platform = @import("platform.zig");
 const config = @import("config.zig");
+const audio_device = @import("audio_device.zig");
 
 const print = std.debug.print;
 
@@ -53,6 +51,7 @@ const ChanState = struct {
     lp: f32 = 0, // low-passed noise state for texture
 };
 
+/// SDL-backed audio renderer for the DualSense USB haptic channels.
 pub const AudioHaptics = struct {
     io: std.Io = undefined,
     stream: ?*c.SDL_AudioStream = null,
@@ -85,6 +84,7 @@ pub const AudioHaptics = struct {
     /// callback asks for up to ~10 ms at a time, well under this size.
     render_buf: [8192]u8 align(2) = [_]u8{0} ** 8192,
 
+    /// Initializes SDL audio and opens the configured DualSense playback sink.
     pub fn start(self: *AudioHaptics, io: std.Io) bool {
         self.io = io;
         // Don't let SDL install SIGINT/SIGTERM handlers: those would swallow
@@ -97,7 +97,7 @@ pub const AudioHaptics = struct {
         }
         self.sdl_inited = true;
 
-        const phys = self.findDevice() orelse {
+        const phys = audio_device.findDevice(self.sink_name) orelse {
             return false;
         };
 
@@ -123,6 +123,7 @@ pub const AudioHaptics = struct {
         return true;
     }
 
+    /// Stops the stream and releases the SDL audio subsystem.
     pub fn stop(self: *AudioHaptics) void {
         if (self.stream) |stream| {
             c.SDL_DestroyAudioStream(stream);
@@ -142,12 +143,14 @@ pub const AudioHaptics = struct {
         self.last_update.store(nowMillis(self.io), .monotonic);
     }
 
+    /// Publishes the target left and right haptic frequencies in hertz.
     pub fn setFrequency(self: *AudioHaptics, l: f32, r: f32) void {
         self.l_freq.store(finiteOrZero(l), .monotonic);
         self.r_freq.store(finiteOrZero(r), .monotonic);
         self.last_update.store(nowMillis(self.io), .monotonic);
     }
 
+    /// Enables or disables haptic output for the next render period.
     pub fn setActive(self: *AudioHaptics, on: bool) void {
         self.active.store(on, .monotonic);
         if (on) self.last_update.store(nowMillis(self.io), .monotonic);
@@ -158,35 +161,6 @@ pub const AudioHaptics = struct {
     /// drives.
     pub fn setTestChannel(self: *AudioHaptics, channel: i32) void {
         self.test_channel.store(channel, .monotonic);
-    }
-
-    /// Picks the DualSense playback device by name substring. On failure,
-    /// lists the available playback devices so `--audio-sink` can be chosen.
-    fn findDevice(self: *AudioHaptics) ?c.SDL_AudioDeviceID {
-        var count: c_int = 0;
-        const devs = c.SDL_GetAudioPlaybackDevices(&count) orelse {
-            print("audio: SDL_GetAudioPlaybackDevices failed: {s}\n", .{sdlError()});
-            return null;
-        };
-        defer c.SDL_free(@ptrCast(devs));
-
-        var i: c_int = 0;
-        while (i < count) : (i += 1) {
-            const name = c.SDL_GetAudioDeviceName(devs[@intCast(i)]) orelse continue;
-            if (containsIgnoreCase(std.mem.span(name), self.sink_name)) {
-                print("audio: using playback device '{s}'\n", .{std.mem.span(name)});
-                return devs[@intCast(i)];
-            }
-        }
-
-        print("audio: no playback device matching '{s}' (use --audio-sink <substring>)\n", .{self.sink_name});
-        i = 0;
-        while (i < count) : (i += 1) {
-            if (c.SDL_GetAudioDeviceName(devs[@intCast(i)])) |name| {
-                print("audio:   device: {s}\n", .{std.mem.span(name)});
-            }
-        }
-        return null;
     }
 
     /// Render `buf.len` bytes (a multiple of FRAME_BYTES) and push them into
@@ -236,6 +210,7 @@ pub const AudioHaptics = struct {
     }
 };
 
+/// SDL callback that fills the requested audio buffer.
 fn onAudio(userdata: ?*anyopaque, stream: ?*c.SDL_AudioStream, additional_amount: c_int, total_amount: c_int) callconv(.c) void {
     _ = total_amount;
     const self: *AudioHaptics = @ptrCast(@alignCast(userdata orelse return));
@@ -296,31 +271,17 @@ fn renderChannel(self: *AudioHaptics, ch: *ChanState, amp_target: f32, freq_targ
     return std.math.clamp(s, -1, 1);
 }
 
+/// Returns monotonic time for audio freshness tracking.
 fn nowMillis(io: std.Io) i64 {
     return platform.nowMillis(io);
 }
 
+/// Returns SDL's current error message or a fallback string.
 fn sdlError() []const u8 {
     return if (c.SDL_GetError()) |p| std.mem.span(p) else "unknown SDL error";
 }
 
-/// Case-insensitive substring match for SDL device names.
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        var matches = true;
-        for (needle, 0..) |nc, j| {
-            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(nc)) {
-                matches = false;
-                break;
-            }
-        }
-        if (matches) return true;
-    }
-    return false;
-}
-
+/// Replaces non-finite floating-point values with zero.
 fn finiteOrZero(value: f32) f32 {
     return if (std.math.isFinite(value)) value else 0;
 }
