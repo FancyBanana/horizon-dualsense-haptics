@@ -46,6 +46,8 @@ const CommandLineArgs = struct {
     save_packets: bool = false,
     /// Maximum number of packets to save.
     capture_count: ?u32 = null,
+    /// Record packets without initializing audio or HID backends.
+    record_only: bool = false,
     /// IP address on which to receive telemetry.
     ip_address: ?[]const u8 = null,
     /// UDP port on which to receive telemetry.
@@ -64,6 +66,10 @@ pub fn main(init: std.process.Init) !void {
     if (args.audio_test != null) {
         return audioTest(init, args);
     }
+    const listen_options = listenerOptions(args);
+    if (args.record_only) {
+        return recordOnly(init, listen_options);
+    }
 
     var app: App = .{};
     try setupApp(init, &app, args);
@@ -72,12 +78,33 @@ pub fn main(init: std.process.Init) !void {
     try listener.listen(init, .{
         .context = &app.hap,
         .process = processFrame,
-    }, .{
+    }, listen_options);
+}
+
+/// Builds listener settings from the parsed command-line arguments.
+fn listenerOptions(args: CommandLineArgs) listener.Options {
+    return .{
         .ip_address = args.ip_address orelse listener.DEFAULT_IP_ADDRESS,
         .port = args.port orelse listener.DEFAULT_PORT,
-        .save_packets = args.save_packets or args.capture_count != null,
+        .save_packets = args.record_only or args.save_packets or args.capture_count != null,
         .max_saved_packets = args.capture_count orelse listener.DEFAULT_MAX_SAVED_PACKETS,
-    });
+    };
+}
+
+/// Records telemetry without opening the audio or HID backends.
+fn recordOnly(init: std.process.Init, options: listener.Options) !void {
+    var context: u8 = 0;
+    return listener.listen(init, .{
+        .context = &context,
+        .process = ignoreFrame,
+    }, options);
+}
+
+/// Discards a valid packet after the listener has received it.
+fn ignoreFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
+    _ = ctx;
+    _ = io;
+    _ = data;
 }
 
 /// Parses one validated telemetry datagram and sends its effects to the device.

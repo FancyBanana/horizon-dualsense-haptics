@@ -125,6 +125,7 @@ The available options are:
 --port <port>               UDP port to receive telemetry (default 8800)
 --save-packets              Save received packets under data/
 --capture-count <n>         Save up to n packets (implies --save-packets)
+--record-only               Record packets without initializing audio or HID
 --selftest                  Parse a bundled packet and print its fields
 --replay                    Replay bundled data/packet-*.udp captures
 --loop                      Repeat replay mode indefinitely
@@ -143,6 +144,9 @@ zig build run -- --ip-address 0.0.0.0 --port 8810
 
 # Capture exactly the first 100 telemetry packets while running.
 zig build run -- --capture-count 100
+
+# Capture packets without requiring a controller or audio device.
+zig build run -- --record-only --capture-count 100
 
 # Use a Bluetooth controller; this automatically disables audio mode.
 zig build run -- --bluetooth
