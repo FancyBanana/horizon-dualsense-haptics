@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const HorizonFrame = struct {
+pub const HorizonFrame = struct {
     // sled
     IsRaceOn: i32 = 0,
     TimestampMS: u32 = 0,

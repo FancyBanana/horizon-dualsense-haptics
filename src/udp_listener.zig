@@ -2,11 +2,17 @@ const std = @import("std");
 const net = std.Io.net;
 const print = std.debug.print;
 
-// This function opens an UDP socket and listens for packets
-// TODO: I've already managed to get data from game,
-//       now I need to change the interface to accept config
-//       and a processing function
-pub fn udp_listen(init: std.process.Init) !void {
+pub const Handler = struct {
+    context: *anyopaque,
+    /// Called with each raw telemetry datagram.
+    process: *const fn (ctx: *anyopaque, io: std.Io, data: []const u8) anyerror!void,
+};
+
+pub const Options = struct {
+    save_packets: bool = false,
+};
+
+pub fn udp_listen(init: std.process.Init, handler: Handler, options: Options) !void {
     const io = init.io;
     const addr = try net.IpAddress.parse("127.0.0.1", 8800);
 
@@ -25,8 +31,8 @@ pub fn udp_listen(init: std.process.Init) !void {
     while (true) {
         packet_counter += 1;
         const msg = try sock.receive(io, &buf);
-        print("#{d} received {d} byte(s) from {f};\n", .{ packet_counter, msg.data.len, msg.from });
-        if (packet_counter <= 1000) {
+        try handler.process(handler.context, io, msg.data);
+        if (options.save_packets and packet_counter <= 1000) {
             const path = try std.fmt.allocPrint(arena, "data/packet-{d}.udp", .{packet_counter});
             const file = try std.Io.Dir.cwd().createFile(io, path, .{});
             try file.writeStreamingAll(io, msg.data);
