@@ -46,6 +46,10 @@ const CommandLineArgs = struct {
     save_packets: bool = false,
     /// Maximum number of packets to save.
     capture_count: ?u32 = null,
+    /// Enable the RPM-driven RGB lightbar.
+    lightbar: bool = false,
+    /// Enable the gear-indicator player LEDs.
+    leds: bool = false,
     /// Record packets without initializing audio or HID backends.
     record_only: bool = false,
     /// IP address on which to receive telemetry.
@@ -123,6 +127,8 @@ fn setupApp(init: std.process.Init, app: *App, args: CommandLineArgs) !void {
     try applyCommandLineOverrides(args, &app.cfg);
 
     app.hap.motor_mode = app.cfg.mode;
+    app.hap.lightbar_enabled = args.lightbar;
+    app.hap.leds_enabled = args.leds;
     if (app.cfg.mode == .audio) {
         app.audio = .{ .sink_name = app.cfg.audio_sink, .gain = app.cfg.audio_gain };
         app.hap.audio = &app.audio;

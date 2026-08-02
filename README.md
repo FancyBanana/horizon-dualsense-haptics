@@ -45,13 +45,17 @@ Bluetooth. Audio mode sends synthesized four-channel USB audio; HID reports
 are still used for trigger effects and audio routing flags.
 
 The lightbar follows engine RPM from green at low RPM to red at the rev limit.
-The four outer player-indicator LEDs skip the center LED and use distinct
-left-to-right patterns for gears 1-10:
+The five player-indicator LEDs show a rough gear gauge ordered by increasing
+LED density. The DualSense firmware mirrors player-LED patterns around the
+center, so only three independent channels exist: center, inner pair, and outer
+pair. This gives seven distinct patterns (gears 8-10 share the all-LEDs state):
 
 ```text
-1: 1000   2: 0100   3: 0010   4: 0001   5: 1001
-6: 0101   7: 0011   8: 1011   9: 0111  10: 1111
+1: oo>oo    2: o>o>o    3: >ooo>    4: o>>>o
+5: >o>o>    6: >>o>>   7-10: >>>>>
 ```
+
+where `>` = lit and `o` = off, left-to-right across all five LEDs.
 
 ```mermaid
 flowchart TD
@@ -140,6 +144,8 @@ The available options are:
 --loop                      Repeat replay mode indefinitely
 --speed <factor>            Scale replay speed; 1.0 is the captured rate
 --audio-test [0..3]         Emit a test tone on one audio channel
+--lightbar                  Enable the RPM-driven RGB lightbar
+--leds                      Enable the gear-indicator player LEDs
 ```
 
 Examples:
@@ -171,9 +177,16 @@ zig build run -- --replay --loop --speed 0.5
 
 # Test one audio channel in audio mode.
 zig build run -- --motor-mode audio --audio-test 2
+
+# Enable the RPM lightbar and gear LEDs.
+zig build run -- --lightbar --leds
 ```
 
 The process listens continuously for telemetry. Stop it with `Ctrl-C`.
+
+Telemetry frames with `IsRaceOn == 0` are treated as paused or menu state. The
+application sends a reset report that releases both triggers, zeros rumble,
+turns off the lightbar and gear LEDs, and silences audio haptics.
 
 ## License
 
