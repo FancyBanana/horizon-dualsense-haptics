@@ -44,6 +44,15 @@ controller. Simple mode uses classic HID rumble bytes and works over USB or
 Bluetooth. Audio mode sends synthesized four-channel USB audio; HID reports
 are still used for trigger effects and audio routing flags.
 
+The lightbar follows engine RPM from green at low RPM to red at the rev limit.
+The four outer player-indicator LEDs skip the center LED and use distinct
+left-to-right patterns for gears 1-10:
+
+```text
+1: 1000   2: 0100   3: 0010   4: 0001   5: 1001
+6: 0101   7: 0011   8: 1011   9: 0111  10: 1111
+```
+
 ```mermaid
 flowchart TD
     File["forza-haptics.conf<br/>(optional)"] --> Config["config.zig<br/>Config.load"]

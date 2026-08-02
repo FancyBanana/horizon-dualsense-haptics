@@ -98,6 +98,7 @@ pub const Haptics = struct {
         self.updateGearShift(frame, now_ms);
         report.right_trigger_effect = self.rightTrigger(frame, now_ms);
         report.left_trigger_effect = self.leftTrigger(frame, now_ms);
+        self.updateLeds(frame, &report);
 
         return report;
     }
@@ -113,8 +114,32 @@ pub const Haptics = struct {
         var report: ds.OutputReport = .{};
         report.right_trigger_effect = ds.effectOff();
         report.left_trigger_effect = ds.effectOff();
+        report.valid_flag1 = ds.Flag1.LIGHTBAR_CONTROL_ENABLE | ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
+        report.valid_flag2 = ds.FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE;
+        report.lightbar_setup = ds.LIGHTBAR_SETUP_LIGHT_OUT;
+        report.led_brightness = 0;
+        report.player_leds = 0;
+        report.led_red = 0;
+        report.led_green = 0;
+        report.led_blue = 0;
         _ = self.device.writeReport(&report) catch {};
         self.device.close();
+    }
+
+    /// Maps engine RPM to a green-to-red lightbar and gear to player LEDs.
+    fn updateLeds(self: *const Haptics, frame: *const parser.HorizonFrame, report: *ds.OutputReport) void {
+        _ = self;
+        const rpm_ratio = if (frame.IsRaceOn != 0 and frame.EngineMaxRpm > 0)
+            std.math.clamp(finiteOrZero(frame.CurrentEngineRpm / frame.EngineMaxRpm), 0, 1)
+        else
+            0;
+
+        report.valid_flag1 |= ds.Flag1.LIGHTBAR_CONTROL_ENABLE | ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
+        report.led_brightness = 255;
+        report.led_red = @intFromFloat(rpm_ratio * 255.0);
+        report.led_green = @intFromFloat((1.0 - rpm_ratio) * 255.0);
+        report.led_blue = 0;
+        report.player_leds = gearLedMask(frame.Gear);
     }
 
     /// Opens the controller when needed, throttling repeated discovery attempts.
@@ -299,6 +324,29 @@ fn sideAudioCue(surface: f32, wheel_rotation: f32, combined_slip: f32, on_strip:
     return .{ .amp = amp, .freq = freq };
 }
 
+/// Converts gears 1-10 into four outer player LEDs, skipping the center LED.
+fn gearLedMask(gear: u8) u8 {
+    const patterns = [_]u4{
+        0b1000, // 1
+        0b0100, // 2
+        0b0010, // 3
+        0b0001, // 4
+        0b1001, // 5
+        0b0101, // 6
+        0b0011, // 7
+        0b1011, // 8
+        0b0111, // 9
+        0b1111, // 10
+    };
+    if (gear == 0 or gear > patterns.len) return 0;
+
+    // Logical bits are left-to-right; physical bit 2 is the center LED.
+    const pattern = patterns[gear - 1];
+    return (@as(u8, pattern & 0b1000) << 1) |
+        (@as(u8, pattern & 0b0100) << 1) |
+        @as(u8, pattern & 0b0011);
+}
+
 /// Converts a normalized rumble value to a DualSense motor byte.
 fn scaleMotor(v: f32) u8 {
     return @intFromFloat(std.math.clamp(finiteOrZero(v), 0, 1) * 255.0);
@@ -376,7 +424,12 @@ test "replay all captured packets through the mapping" {
         const report = hap.buildReport(std.testing.io, &frame);
 
         try std.testing.expectEqual(ds.Flag0.AUDIO_HAPTICS, report.valid_flag0);
-        try std.testing.expectEqual(ds.Flag1.AUDIO_CONTROL2_ENABLE, report.valid_flag1);
+        try std.testing.expectEqual(
+            ds.Flag1.AUDIO_CONTROL2_ENABLE |
+                ds.Flag1.LIGHTBAR_CONTROL_ENABLE |
+                ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE,
+            report.valid_flag1,
+        );
         try std.testing.expectEqual(ds.Audio.PATH_SEL_INTERNAL_SPEAKER, report.audio_enable_bits);
         try std.testing.expectEqual(ds.Audio.SPEAKER_VOLUME_MAX, report.speaker_volume);
         try std.testing.expectEqual(ds.Audio.SP_PREAMP_GAIN_6DB, report.audio_control2);
@@ -419,9 +472,45 @@ test "simple mode enables classic rumble flags" {
 
     const report = hap.buildReport(std.testing.io, &frame);
     try std.testing.expectEqual(ds.Flag0.ALL, report.valid_flag0);
-    try std.testing.expectEqual(@as(u8, 0), report.valid_flag1);
+    try std.testing.expectEqual(
+        ds.Flag1.LIGHTBAR_CONTROL_ENABLE | ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE,
+        report.valid_flag1,
+    );
     try std.testing.expect(report.motor_left > report.motor_right);
     try std.testing.expect(report.motor_right > 0);
+}
+
+test "lightbar follows rpm and gear LEDs" {
+    var hap: Haptics = .{};
+    var frame = parser.HorizonFrame{};
+    frame.IsRaceOn = 1;
+    frame.EngineMaxRpm = 8000;
+    frame.CurrentEngineRpm = 0;
+    frame.Gear = 1;
+
+    var report = hap.buildReport(std.testing.io, &frame);
+    try std.testing.expectEqual(@as(u8, 0), report.led_red);
+    try std.testing.expectEqual(@as(u8, 255), report.led_green);
+    try std.testing.expectEqual(@as(u8, 0x10), report.player_leds);
+
+    frame.CurrentEngineRpm = 8000;
+    frame.Gear = 10;
+    report = hap.buildReport(std.testing.io, &frame);
+    try std.testing.expectEqual(@as(u8, 255), report.led_red);
+    try std.testing.expectEqual(@as(u8, 0), report.led_green);
+    try std.testing.expectEqual(@as(u8, 0x1B), report.player_leds);
+}
+
+test "gear LEDs use distinct outer-LED patterns" {
+    try std.testing.expectEqual(@as(u8, 0), gearLedMask(0));
+    try std.testing.expectEqual(@as(u8, 0x02), gearLedMask(3));
+    try std.testing.expectEqual(@as(u8, 0x01), gearLedMask(4));
+    try std.testing.expectEqual(@as(u8, 0x09), gearLedMask(6));
+    try std.testing.expectEqual(@as(u8, 0x03), gearLedMask(7));
+    try std.testing.expectEqual(@as(u8, 0x13), gearLedMask(8));
+    try std.testing.expectEqual(@as(u8, 0x0B), gearLedMask(9));
+    try std.testing.expectEqual(@as(u8, 0x1B), gearLedMask(10));
+    try std.testing.expectEqual(@as(u8, 0), gearLedMask(11));
 }
 
 test "trigger zone helpers" {

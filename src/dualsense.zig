@@ -53,6 +53,10 @@ pub const Flag1 = struct {
     /// sets this alongside Flag0.AUDIO_HAPTICS when enabling the
     /// internal-speaker preamp gain (+6 dB), which boosts the haptic path.
     pub const AUDIO_CONTROL2_ENABLE: u8 = 0x80;
+    /// Enable lightbar RGB fields.
+    pub const LIGHTBAR_CONTROL_ENABLE: u8 = 0x04;
+    /// Enable player-indicator LED fields.
+    pub const PLAYER_INDICATOR_CONTROL_ENABLE: u8 = 0x10;
 };
 
 /// Audio-control fields (report bytes 5-8, 38).
@@ -71,6 +75,10 @@ pub const Audio = struct {
 
 /// valid_flag2 (report byte 39) bits.
 pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation, firmware 2.24+
+/// Enable the lightbar setup field.
+pub const FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE: u8 = 0x02;
+/// Lightbar setup value that turns the lightbar off.
+pub const LIGHTBAR_SETUP_LIGHT_OUT: u8 = 0x02;
 
 /// Trigger effect mode bytes (byte 0 of the 11-byte effect section).
 /// Trigger effect encoding understood by the DualSense firmware.
@@ -101,7 +109,7 @@ pub const OutputReport = extern struct {
     audio_control2: u8 = 0, // byte 38: internal-speaker preamp gain (+6 dB)
     valid_flag2: u8 = FLAG2_RUMBLE_V2,
     unknown2: [2]u8 = [_]u8{0} ** 2,
-    led_animation: u8 = 0,
+    lightbar_setup: u8 = 0,
     led_brightness: u8 = 0,
     player_leds: u8 = 0,
     led_red: u8 = 0,
