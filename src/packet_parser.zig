@@ -1,0 +1,112 @@
+const std = @import("std");
+
+const HorizonFrame = struct {
+    // sled
+    IsRaceOn: i32 = 0,
+    TimestampMS: u32 = 0,
+    EngineMaxRpm: f32 = 0,
+    EngineIdleRpm: f32 = 0,
+    CurrentEngineRpm: f32 = 0,
+    AccelerationX: f32 = 0,
+    AccelerationY: f32 = 0,
+    AccelerationZ: f32 = 0,
+    VelocityX: f32 = 0,
+    VelocityY: f32 = 0,
+    VelocityZ: f32 = 0,
+    AngularVelocityX: f32 = 0,
+    AngularVelocityY: f32 = 0,
+    AngularVelocityZ: f32 = 0,
+    Yaw: f32 = 0,
+    Pitch: f32 = 0,
+    Roll: f32 = 0,
+    NormalizedSuspensionTravelFl: f32 = 0,
+    NormalizedSuspensionTravelFr: f32 = 0,
+    NormalizedSuspensionTravelRl: f32 = 0,
+    NormalizedSuspensionTravelRr: f32 = 0,
+    TireSlipRatioFl: f32 = 0,
+    TireSlipRatioFr: f32 = 0,
+    TireSlipRatioRl: f32 = 0,
+    TireSlipRatioRr: f32 = 0,
+    WheelRotationSpeedFl: f32 = 0,
+    WheelRotationSpeedFr: f32 = 0,
+    WheelRotationSpeedRl: f32 = 0,
+    WheelRotationSpeedRr: f32 = 0,
+    WheelOnRumbleStripFl: i32 = 0,
+    WheelOnRumbleStripFr: i32 = 0,
+    WheelOnRumbleStripRl: i32 = 0,
+    WheelOnRumbleStripRr: i32 = 0,
+    WheelInPuddleDepthFl: f32 = 0,
+    WheelInPuddleDepthFr: f32 = 0,
+    WheelInPuddleDepthRl: f32 = 0,
+    WheelInPuddleDepthRr: f32 = 0,
+    SurfaceRumbleFl: f32 = 0,
+    SurfaceRumbleFr: f32 = 0,
+    SurfaceRumbleRl: f32 = 0,
+    SurfaceRumbleRr: f32 = 0,
+    TireSlipAngleFl: f32 = 0,
+    TireSlipAngleFr: f32 = 0,
+    TireSlipAngleRl: f32 = 0,
+    TireSlipAngleRr: f32 = 0,
+    TireCombinedSlipFl: f32 = 0,
+    TireCombinedSlipFr: f32 = 0,
+    TireCombinedSlipRl: f32 = 0,
+    TireCombinedSlipRr: f32 = 0,
+    SuspensionTravelMetersFl: f32 = 0,
+    SuspensionTravelMetersFr: f32 = 0,
+    SuspensionTravelMetersRl: f32 = 0,
+    SuspensionTravelMetersRr: f32 = 0,
+    CarOrdinal: i32 = 0,
+    CarClass: i32 = 0,
+    CarPerformanceIndex: i32 = 0,
+    DrivetrainType: i32 = 0,
+    NumCylinders: i32 = 0,
+    // Horizon extra fields between the sled and dash sections
+    CarCategory: i32 = 0,
+    HorizonUnknown1: u32 = 0,
+    HorizonUnknown2: u32 = 0,
+    // dash
+    PositionX: f32 = 0,
+    PositionY: f32 = 0,
+    PositionZ: f32 = 0,
+    Speed: f32 = 0,
+    Power: f32 = 0,
+    Torque: f32 = 0,
+    TireTempFl: f32 = 0,
+    TireTempFr: f32 = 0,
+    TireTempRl: f32 = 0,
+    TireTempRr: f32 = 0,
+    Boost: f32 = 0,
+    Fuel: f32 = 0,
+    DistanceTraveled: f32 = 0,
+    BestLap: f32 = 0,
+    LastLap: f32 = 0,
+    CurrentLap: f32 = 0,
+    CurrentRaceTime: f32 = 0,
+    LapNumber: u16 = 0,
+    RacePosition: u8 = 0,
+    Accel: u8 = 0,
+    Brake: u8 = 0,
+    Clutch: u8 = 0,
+    HandBrake: u8 = 0,
+    Gear: u8 = 0,
+    Steer: i8 = 0,
+    NormalizedDrivingLine: i8 = 0,
+    NormalizedAIBrakeDifference: i8 = 0,
+    HorizonTrailingUnknown: u8 = 0,
+};
+
+pub fn parse_packet(reader: *std.Io.Reader) !HorizonFrame {
+    var frame = HorizonFrame{};
+
+    inline for (@typeInfo(HorizonFrame).@"struct".fields) |field| {
+        const bytes = try reader.take(@sizeOf(field.type));
+
+        switch (field.type) {
+            bool => @field(frame, field.name) = bytes[0] != 0,
+            else => @field(frame, field.name) =
+                std.mem.bytesToValue(field.type, bytes),
+        }
+    }
+
+    return frame;
+}
