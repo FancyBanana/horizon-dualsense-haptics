@@ -4,12 +4,12 @@
 telemetry into haptic feedback for a Sony DualSense controller. It listens for
 the game's 324-byte UDP telemetry packets, maps wheel, brake, gear, and engine
 events to controller effects, and sends those effects through the DualSense
-USB HID interface.
+USB or Bluetooth HID interface.
 
 The project supports two motor backends:
 
 - `simple`: classic DualSense rumble reports. This works with a controller
-  connected over USB. Bluetooth output support is planned but not implemented.
+  connected over USB or Bluetooth.
 - `audio`: synthesized 4-channel audio sent to the DualSense USB audio device;
   the rear channels drive the left and right haptic actuators.
 
@@ -19,7 +19,7 @@ for audio. The Windows HID layer is currently a stub.
 ## Requirements
 
 - Zig 0.16.0 or newer
-- A DualSense or DualSense Edge controller
+- A DualSense or DualSense Edge controller connected over USB or Bluetooth
 - For audio mode, a USB connection to the controller and an SDL3-visible audio
   device
 - For Linux, permission to open the controller's `/dev/hidraw` device
@@ -69,6 +69,7 @@ The available options are:
 
 ```text
 --motor-mode simple|audio   Select the haptic backend
+--bluetooth                 Force simple rumble mode and disable USB audio
 --audio-sink <substring>    Select the matching SDL audio device
 --audio-gain <0..1>         Set audio output gain
 --save-packets              Save received packets under data/
@@ -85,8 +86,14 @@ Examples:
 # Use classic rumble without a configuration file.
 zig build run -- --motor-mode simple
 
+# Use a Bluetooth controller; this automatically disables audio mode.
+zig build run -- --bluetooth
+
 # Replay the checked-in telemetry captures through the controller.
 zig build run -- --replay
+
+# Replay captures through a Bluetooth controller.
+zig build run -- --bluetooth --replay
 
 # Replay at half speed and repeat until interrupted.
 zig build run -- --replay --loop --speed 0.5

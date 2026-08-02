@@ -58,6 +58,11 @@ fn setupApp(init: std.process.Init, app: *App) !void {
             return error.InvalidMotorMode;
         };
     }
+    if (hasArg(init, "--bluetooth")) {
+        // Bluetooth exposes rumble and trigger HID reports, but not the USB
+        // audio stream used by the native audio-haptics backend.
+        app.cfg.mode = .simple;
+    }
     if (argValue(init, "--audio-sink")) |v| app.cfg.audio_sink = v;
     if (argValue(init, "--audio-gain")) |v| {
         app.cfg.audio_gain = std.math.clamp(try std.fmt.parseFloat(f32, v), 0, 1);

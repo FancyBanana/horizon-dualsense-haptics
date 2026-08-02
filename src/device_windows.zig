@@ -20,7 +20,7 @@ pub const Device = struct {
         return error.DeviceNotFound;
     }
 
-    pub fn writeReport(self: *const Device, report: *const ds.OutputReport) Error!void {
+    pub fn writeReport(self: *Device, report: *const ds.OutputReport) Error!void {
         _ = self;
         _ = report;
         return error.WriteFailed;

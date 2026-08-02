@@ -136,16 +136,16 @@ pub const Haptics = struct {
 
         self.updateMotors(frame, &report);
 
-        // Enable the native audio-haptics path. These are the exact flag bits
-        // the kernel driver writes when it routes the internal speaker and the
-        // voice-coil actuators (RL/RR) to the USB audio stream: with classic
-        // rumble flags set instead, the firmware falls back to rumble
-        // emulation and mutes the audio-driven haptics entirely.
-        report.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
-        report.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
-        report.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
-        report.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
-        report.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
+        if (self.motor_mode == .audio) {
+            // Enable the native audio-haptics path. These are the exact flag
+            // bits the kernel driver writes when it routes the internal
+            // speaker and voice-coil actuators to the USB audio stream.
+            report.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
+            report.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
+            report.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
+            report.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
+            report.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
+        }
 
         const now_ms = nowMillis(io);
         self.updateGearShift(frame, now_ms);
@@ -328,7 +328,7 @@ const CAPTURED_PACKET_SIZE = 324;
 // Offline replay: run every captured packet through the mapping and check the
 // produced report is structurally sane. No DualSense required.
 test "replay all captured packets through the mapping" {
-    var hap: Haptics = .{};
+    var hap: Haptics = .{ .motor_mode = .audio };
 
     var count: usize = 0;
     var saw_racing = false;
@@ -384,6 +384,19 @@ test "replay all captured packets through the mapping" {
     try std.testing.expect(saw_racing);
     try std.testing.expect(saw_out_of_race);
     try std.testing.expect(saw_braking);
+}
+
+test "simple mode enables classic rumble flags" {
+    var hap: Haptics = .{ .motor_mode = .simple };
+    var frame = parser.HorizonFrame{};
+    frame.SurfaceRumbleFl = 1.0;
+    frame.SurfaceRumbleFr = 0.5;
+
+    const report = hap.buildReport(std.testing.io, &frame);
+    try std.testing.expectEqual(ds.Flag0.ALL, report.valid_flag0);
+    try std.testing.expectEqual(@as(u8, 0), report.valid_flag1);
+    try std.testing.expect(report.motor_left > report.motor_right);
+    try std.testing.expect(report.motor_right > 0);
 }
 
 test "trigger zone helpers" {

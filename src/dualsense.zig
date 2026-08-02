@@ -2,14 +2,23 @@
 
 const std = @import("std");
 
-// The DualSense USB HID protocol (report ID 0x02) and the trigger-effect
-// encodings. Platform-specific device access lives in device.zig.
+// The DualSense USB/Bluetooth HID protocols and trigger-effect encodings.
+// Platform-specific device access lives in device.zig.
 
 pub const VENDOR_ID: u16 = 0x054C;
 pub const PRODUCT_IDS = [_]u16{ 0x0CE6, 0x0DF2 }; // DualSense, DualSense Edge
 
+pub const Bus = enum {
+    usb,
+    bluetooth,
+};
+
 pub const USB_REPORT_ID: u8 = 0x02;
 pub const USB_REPORT_SIZE: usize = 48;
+pub const BT_REPORT_ID: u8 = 0x31;
+pub const BT_REPORT_SIZE: usize = 78;
+pub const BT_OUTPUT_TAG: u8 = 0x10;
+const BT_CRC_SEED: u8 = 0xA2;
 
 /// valid_flag0 (report byte 1) bits. Each bit says which group of fields this
 /// packet is allowed to change.
@@ -94,10 +103,56 @@ pub const OutputReport = extern struct {
     led_blue: u8 = 0,
 };
 
+/// The Bluetooth output report wraps the USB report's 47-byte common section
+/// with a sequence nibble, transport tag, padding, and a CRC32-LE checksum.
+pub const BtOutputReport = extern struct {
+    report_id: u8 = BT_REPORT_ID,
+    sequence: u8 = 0,
+    tag: u8 = BT_OUTPUT_TAG,
+    common: [47]u8 = [_]u8{0} ** 47,
+    reserved: [24]u8 = [_]u8{0} ** 24,
+    crc: [4]u8 = [_]u8{0} ** 4,
+
+    pub fn fromUsb(report: *const OutputReport, sequence: u8) BtOutputReport {
+        var bt: BtOutputReport = .{ .sequence = (sequence & 0x0F) << 4 };
+        const usb_bytes = std.mem.asBytes(report);
+        @memcpy(&bt.common, usb_bytes[1..48]);
+
+        const checksum = bluetoothCrc(std.mem.asBytes(&bt)[0..74]);
+        bt.crc[0] = @truncate(checksum);
+        bt.crc[1] = @truncate(checksum >> 8);
+        bt.crc[2] = @truncate(checksum >> 16);
+        bt.crc[3] = @truncate(checksum >> 24);
+        return bt;
+    }
+};
+
 comptime {
     if (@sizeOf(OutputReport) != USB_REPORT_SIZE) {
         @compileError("OutputReport must be exactly 48 bytes");
     }
+    if (@sizeOf(BtOutputReport) != BT_REPORT_SIZE) {
+        @compileError("BtOutputReport must be exactly 78 bytes");
+    }
+}
+
+/// Matches the kernel's crc32_le(~0, {0xA2}, 1) seed and final complement.
+fn bluetoothCrc(bytes: []const u8) u32 {
+    var crc = crc32LeUpdate(0xFFFFFFFF, &.{BT_CRC_SEED});
+    crc = crc32LeUpdate(crc, bytes);
+    return ~crc;
+}
+
+fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
+    var crc = initial;
+    for (bytes) |byte| {
+        crc ^= byte;
+        for (0..8) |_| {
+            const mask = @as(u32, 0) -% (crc & 1);
+            crc = (crc >> 1) ^ (0xEDB88320 & mask);
+        }
+    }
+    return crc;
 }
 
 pub const Effect = [11]u8;
@@ -167,6 +222,35 @@ pub const Error = error{ DeviceNotFound, AccessDenied, WriteFailed, WouldBlock }
 
 test "output report size" {
     try std.testing.expectEqual(USB_REPORT_SIZE, @sizeOf(OutputReport));
+}
+
+test "bluetooth report wraps USB fields and checksum" {
+    var usb: OutputReport = .{};
+    usb.motor_left = 0x12;
+    usb.motor_right = 0x34;
+    usb.left_trigger_effect = effectRigid(180);
+
+    const bt = BtOutputReport.fromUsb(&usb, 3);
+    try std.testing.expectEqual(BT_REPORT_ID, bt.report_id);
+    try std.testing.expectEqual(0x30, bt.sequence);
+    try std.testing.expectEqual(BT_OUTPUT_TAG, bt.tag);
+    try std.testing.expectEqual(0x12, bt.common[3]);
+    try std.testing.expectEqual(0x34, bt.common[2]);
+    try std.testing.expectEqual(0, bt.reserved[0]);
+    try std.testing.expectEqual(0, bt.reserved[23]);
+
+    const bytes = std.mem.asBytes(&bt);
+    var checksum: u32 = bytes[74];
+    checksum |= @as(u32, bytes[75]) << 8;
+    checksum |= @as(u32, bytes[76]) << 16;
+    checksum |= @as(u32, bytes[77]) << 24;
+    try std.testing.expectEqual(checksum, bluetoothCrc(bytes[0..74]));
+}
+
+test "crc32 little-endian known vector" {
+    var crc = crc32LeUpdate(0xFFFFFFFF, "123456789");
+    crc = ~crc;
+    try std.testing.expectEqual(0xCBF43926, crc);
 }
 
 test "trigger effect encodings" {
