@@ -1,10 +1,23 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 const std = @import("std");
 const Io = std.Io;
 const listener = @import("udp_listener.zig");
 const parser = @import("packet_parser.zig");
 const haptics = @import("haptics.zig");
+const audio = @import("audio.zig");
+const config = @import("config.zig");
 
 const print = std.debug.print;
+
+/// App-owned runtime state: the audio backend must outlive the haptics object
+/// that references it, so both live on the caller's stack and are wired up
+/// with the internal `&` pointers only after this struct's address is fixed.
+const App = struct {
+    hap: haptics.Haptics = .{},
+    audio: audio.AudioHaptics = .{},
+    cfg: config.Config = .{},
+};
 
 fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
     const self: *haptics.Haptics = @ptrCast(@alignCast(ctx));
@@ -20,12 +33,46 @@ pub fn main(init: std.process.Init) !void {
     if (hasArg(init, "--replay")) {
         return replay(init);
     }
+    if (hasArg(init, "--audio-test")) {
+        return audioTest(init);
+    }
 
-    var hap: haptics.Haptics = .{};
+    var app: App = .{};
+    try setupApp(init, &app);
+    defer app.audio.stop();
     try listener.udp_listen(init, .{
-        .context = &hap,
+        .context = &app.hap,
         .process = processFrame,
     }, .{ .save_packets = hasArg(init, "--save-packets") });
+}
+
+/// Loads the config file, applies CLI overrides, and starts the audio backend
+/// when audio motor mode is selected (falling back to simple rumble if the
+/// DualSense USB sink cannot be reached).
+fn setupApp(init: std.process.Init, app: *App) !void {
+    app.cfg = config.Config.load(init.io, init.arena.allocator(), config.DEFAULT_CONFIG_PATH);
+
+    if (argValue(init, "--motor-mode")) |v| {
+        app.cfg.mode = config.MotorMode.parse(v) orelse {
+            print("invalid --motor-mode '{s}' (expected simple|audio)\n", .{v});
+            return error.InvalidMotorMode;
+        };
+    }
+    if (argValue(init, "--audio-sink")) |v| app.cfg.audio_sink = v;
+    if (argValue(init, "--audio-gain")) |v| {
+        app.cfg.audio_gain = std.math.clamp(try std.fmt.parseFloat(f32, v), 0, 1);
+    }
+
+    app.hap.motor_mode = app.cfg.mode;
+    if (app.cfg.mode == .audio) {
+        app.audio = .{ .sink_name = app.cfg.audio_sink, .gain = app.cfg.audio_gain };
+        app.audio.start(init.io);
+        app.hap.audio = &app.audio;
+        if (!app.audio.waitConnected(init.io, 3000)) {
+            print("audio: no DualSense USB sink, falling back to simple rumble\n", .{});
+            app.hap.motor_mode = .simple;
+        }
+    }
 }
 
 /// Parses a captured packet and prints it. Regression check for the parser.
@@ -42,6 +89,28 @@ fn selftest(init: std.process.Init) !void {
     std.debug.print("Packet data:\n{any}", .{data});
 }
 
+/// Emits a fixed test tone on one audio channel so each actuator can be
+/// identified by ear (FL=0, FR=1, RL=2/speaker, RR=3). `--audio-test [0..3]`.
+fn audioTest(init: std.process.Init) !void {
+    var app: App = .{};
+    try setupApp(init, &app);
+    defer app.audio.stop();
+    if (app.cfg.mode != .audio) {
+        print("audio backend unavailable; cannot run the audio test\n", .{});
+        return error.AudioUnavailable;
+    }
+
+    var channel: i32 = 0;
+    if (argValue(init, "--audio-test")) |v| {
+        if (std.fmt.parseInt(i32, v, 10)) |c| channel = c else |_| {}
+    }
+    channel = std.math.clamp(channel, 0, 3);
+
+    app.audio.setTestChannel(channel);
+    print("audio test: {d} Hz tone on channel {d} (0=FL speaker 1=FR speaker 2=RL left motor 3=RR right motor), Ctrl-C to stop\n", .{ 100, channel });
+    while (true) try std.Io.sleep(init.io, .{ .nanoseconds = std.time.ns_per_s }, .boot);
+}
+
 const CAPTURED_PACKET_SIZE = 324;
 const MAX_FRAME_GAP_MS: u32 = 250; // don't stall on pauses in the capture
 
@@ -50,7 +119,10 @@ const MAX_FRAME_GAP_MS: u32 = 250; // don't stall on pauses in the capture
 /// --speed <factor> scales the playback rate (1.0 = original cadence).
 fn replay(init: std.process.Init) !void {
     const io = init.io;
-    var hap: haptics.Haptics = .{};
+    var app: App = .{};
+    try setupApp(init, &app);
+    defer app.audio.stop();
+    var hap = &app.hap;
 
     const loop_forever = hasArg(init, "--loop");
     var speed: f32 = 1.0;

@@ -1,13 +1,9 @@
-const builtin = @import("builtin");
-const std = @import("std");
-const linux = std.os.linux;
-const Io = std.Io;
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
-comptime {
-    if (builtin.os.tag != .linux) {
-        @compileError("dualsense.zig only supports Linux (/dev/hidraw)");
-    }
-}
+const std = @import("std");
+
+// The DualSense USB HID protocol (report ID 0x02) and the trigger-effect
+// encodings. Platform-specific device access lives in device.zig.
 
 pub const VENDOR_ID: u16 = 0x054C;
 pub const PRODUCT_IDS = [_]u16{ 0x0CE6, 0x0DF2 }; // DualSense, DualSense Edge
@@ -15,12 +11,47 @@ pub const PRODUCT_IDS = [_]u16{ 0x0CE6, 0x0DF2 }; // DualSense, DualSense Edge
 pub const USB_REPORT_ID: u8 = 0x02;
 pub const USB_REPORT_SIZE: usize = 48;
 
-/// valid_flag0 (report byte 1) bits.
+/// valid_flag0 (report byte 1) bits. Each bit says which group of fields this
+/// packet is allowed to change.
 pub const Flag0 = struct {
     pub const RUMBLE: u8 = 0x01 | 0x02; // classic vibration: main motors
     pub const RIGHT_TRIGGER: u8 = 0x04;
     pub const LEFT_TRIGGER: u8 = 0x08;
+    pub const AUDIO_VOLUME: u8 = 0x10; // apply the headphone/speaker/mic volume bytes
+    pub const INTERNAL_SPEAKER: u8 = 0x20; // apply the internal-speaker routing byte
+    pub const MIC_VOLUME: u8 = 0x40;
+    pub const INTERNAL_MIC: u8 = 0x80;
     pub const ALL: u8 = RUMBLE | RIGHT_TRIGGER | LEFT_TRIGGER;
+    /// Native audio-haptics mode (0xFC): triggers + audio control, but no
+    /// rumble bits. Setting the rumble bits puts the controller in classic
+    /// rumble emulation, which silences the voice-coil haptics path (the state
+    /// DS4Windows/PCGamingWiki call `UseRumbleNotHaptics = 0xFF` vs `0xFC`).
+    pub const AUDIO_HAPTICS: u8 = RIGHT_TRIGGER | LEFT_TRIGGER | AUDIO_VOLUME |
+        INTERNAL_SPEAKER | MIC_VOLUME | INTERNAL_MIC;
+};
+
+/// valid_flag1 (report byte 2) bits.
+pub const Flag1 = struct {
+    /// Apply the `audio_control2` byte (report byte 38). The kernel driver
+    /// sets this alongside Flag0.AUDIO_HAPTICS when enabling the
+    /// internal-speaker preamp gain (+6 dB), which boosts the haptic path.
+    pub const AUDIO_CONTROL2_ENABLE: u8 = 0x80;
+};
+
+/// Audio-control fields (report bytes 5-8, 38).
+pub const Audio = struct {
+    /// Internal-speaker routing in `audio_enable_bits` (byte 8): enable the
+    /// internal speaker and mute the headphone jack. Sony's firmware mutes the
+    /// internal output by default; this byte (OUTPUT_PATH_SEL = 3) un-mutes it,
+    /// which is also what routes RL/RR to the haptic actuators.
+    pub const PATH_SEL_INTERNAL_SPEAKER: u8 = 0x30;
+    /// Speaker/haptics volume (byte 6). The PS5 firmware only honours the
+    /// 0x3d..0x64 range; 0x64 = 100%.
+    pub const SPEAKER_VOLUME_MAX: u8 = 0x64;
+    pub const HEADPHONE_VOLUME_MAX: u8 = 0x7f;
+    pub const MIC_VOLUME_MID: u8 = 0x40;
+    /// SP preamp gain +6 dB (byte 38, `audio_control2`).
+    pub const SP_PREAMP_GAIN_6DB: u8 = 0x02;
 };
 
 /// valid_flag2 (report byte 39) bits.
@@ -51,7 +82,8 @@ pub const OutputReport = extern struct {
     audio_mute_bits: u8 = 0,
     right_trigger_effect: [11]u8 = [_]u8{0} ** 11,
     left_trigger_effect: [11]u8 = [_]u8{0} ** 11,
-    unknown1: [6]u8 = [_]u8{0} ** 6,
+    unknown1: [5]u8 = [_]u8{0} ** 5,
+    audio_control2: u8 = 0, // byte 38: internal-speaker preamp gain (+6 dB)
     valid_flag2: u8 = FLAG2_RUMBLE_V2,
     unknown2: [2]u8 = [_]u8{0} ** 2,
     led_animation: u8 = 0,
@@ -133,84 +165,6 @@ fn packZones(zones: [10]u8) [6]u8 {
 
 pub const Error = error{ DeviceNotFound, AccessDenied, WriteFailed, WouldBlock };
 
-const O_RDWR_NONBLOCK = linux.O{ .ACCMODE = .RDWR, .NONBLOCK = true };
-
-pub const Device = struct {
-    fd: linux.fd_t = -1,
-
-    pub fn connected(self: *const Device) bool {
-        return self.fd >= 0;
-    }
-
-    /// Scans /dev/hidraw* and opens the first node whose sysfs uevent reports
-    /// a DualSense VID/PID. On some kernels the controller exposes several
-    /// hidraw nodes (gamepad, sensors, audio); the first one that opens is
-    /// used, which is the gamepad interface.
-    pub fn open(io: Io) Error!Device {
-        var minor: u32 = 0;
-        while (minor < 64) : (minor += 1) {
-            if (!isDualSenseNode(io, minor)) continue;
-
-            var path_buf: [32]u8 = undefined;
-            const path = std.fmt.bufPrintZ(&path_buf, "/dev/hidraw{d}", .{minor}) catch unreachable;
-
-            const rc = linux.open(path, O_RDWR_NONBLOCK, 0);
-            switch (linux.errno(rc)) {
-                .SUCCESS => return .{ .fd = @intCast(rc) },
-                .ACCES => return error.AccessDenied,
-                else => continue,
-            }
-        }
-        return error.DeviceNotFound;
-    }
-
-    pub fn writeReport(self: *const Device, report: *const OutputReport) Error!void {
-        const rc = linux.write(self.fd, @ptrCast(report), USB_REPORT_SIZE);
-        switch (linux.errno(rc)) {
-            .SUCCESS => {},
-            .AGAIN => return error.WouldBlock, // drop this frame
-            else => return error.WriteFailed,
-        }
-    }
-
-    pub fn close(self: *Device) void {
-        if (self.fd >= 0) {
-            _ = linux.close(self.fd);
-            self.fd = -1;
-        }
-    }
-};
-
-/// Returns true if the hidraw node at `minor` is a DualSense gamepad
-/// interface. Errors (node missing, unreadable sysfs) are treated as no match.
-fn isDualSenseNode(io: Io, minor: u32) bool {
-    var path_buf: [96]u8 = undefined;
-    const path = std.fmt.bufPrint(&path_buf, "/sys/class/hidraw/hidraw{d}/device/uevent", .{minor}) catch return false;
-
-    const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only }) catch return false;
-    defer file.close(io);
-
-    var read_buf: [1024]u8 = undefined;
-    const n = file.readStreaming(io, &.{read_buf[0..]}) catch return false;
-    return matchesHidId(read_buf[0..n]);
-}
-
-fn matchesHidId(contents: []const u8) bool {
-    var lines = std.mem.splitScalar(u8, contents, '\n');
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "HID_ID=")) {
-            var it = std.mem.splitScalar(u8, line["HID_ID=".len..], ':');
-            _ = it.next() orelse return false; // bus
-            const vid = it.next() orelse return false;
-            const pid = it.next() orelse return false;
-            const vid_u = std.fmt.parseInt(u16, vid, 16) catch return false;
-            const pid_u = std.fmt.parseInt(u16, pid, 16) catch return false;
-            return vid_u == VENDOR_ID and std.mem.indexOfScalar(u16, &PRODUCT_IDS, pid_u) != null;
-        }
-    }
-    return false;
-}
-
 test "output report size" {
     try std.testing.expectEqual(USB_REPORT_SIZE, @sizeOf(OutputReport));
 }
@@ -232,8 +186,21 @@ test "trigger effect encodings" {
     // top 2 zones maxed -> active mask bits 8 and 9 -> active = 0x0300
     const zones = effectRigidZones(.{ 0, 0, 0, 0, 0, 0, 0, 0, 8, 8 });
     try std.testing.expectEqual(@intFromEnum(EffectMode.rigid_zones), zones[0]);
-    try std.testing.expectEqual(0x00, zones[1]); // active low byte
-    try std.testing.expectEqual(0x03, zones[2]); // active high byte
-    try std.testing.expectEqual(0xFF, zones[5]); // packed bytes 16-23
-    try std.testing.expectEqual(0xFF, zones[6]); // packed bytes 24-29
+    try std.testing.expectEqual(0x00, zones[1]); // active mask low byte
+    try std.testing.expectEqual(0x03, zones[2]); // active mask high byte
+    try std.testing.expectEqual(0x00, zones[3]); // packed bits 0-7 (zones 0-2)
+    try std.testing.expectEqual(0x00, zones[4]); // packed bits 8-15 (zones 3-5)
+    try std.testing.expectEqual(0x00, zones[5]); // packed bits 16-23 (zones 6-7)
+    try std.testing.expectEqual(0x3F, zones[6]); // packed bits 24-29 (zones 8-9, 7+7)
+
+    // all zones maxed -> the 30-bit packed field is all ones, freq lands at 9
+    const all = effectVibrateZones(.{ 8, 8, 8, 8, 8, 8, 8, 8, 8, 8 }, 20);
+    try std.testing.expectEqual(@intFromEnum(EffectMode.vibrate_zones), all[0]);
+    try std.testing.expectEqual(0xFF, all[1]); // active mask low byte
+    try std.testing.expectEqual(0x03, all[2]); // active mask high byte
+    try std.testing.expectEqual(0xFF, all[3]); // packed bits 0-7
+    try std.testing.expectEqual(0xFF, all[4]); // packed bits 8-15
+    try std.testing.expectEqual(0xFF, all[5]); // packed bits 16-23
+    try std.testing.expectEqual(0x3F, all[6]); // packed bits 24-29 (30 bits)
+    try std.testing.expectEqual(20, all[9]); // frequency byte
 }
