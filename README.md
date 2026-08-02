@@ -24,15 +24,15 @@ then derives trigger, rumble, and audio effects from that frame.
 
 ```mermaid
 flowchart LR
-    Game["Forza Horizon 5"] -->|324-byte UDP| Listener["udp_listener.zig<br/>127.0.0.1:8800"]
+    Game["Forza Horizon 5"] -->|324-byte UDP| Listener["udp_listener.zig<br/>configurable address"]
     Listener --> Main["main.zig<br/>processFrame"]
     Main --> Parser["packet_parser.zig"]
     Parser --> Frame["HorizonFrame"]
     Frame --> Mapping["haptics.zig<br/>Haptics mapping"]
 
     Mapping --> Report["dualsense.zig<br/>OutputReport"]
-    Report --> Selector["device.zig<br/>platform selector"]
-    Selector --> Device["device_sdl.zig<br/>SDL3 HIDAPI"]
+    Report --> Device["device.zig<br/>HID interface"]
+    Device --> SDLDed["device_sdl.zig<br/>SDL3 HIDAPI"]
 
     Mapping --> Audio["audio.zig<br/>SDL3 renderer"]
     Audio --> AudioDevice["audio_device.zig<br/>SDL device matching"]
@@ -112,7 +112,8 @@ zig build -Doptimize=ReleaseFast
 
 ## Use
 
-Configure Forza Horizon to send telemetry to `127.0.0.1:8800`, then run:
+Configure Forza Horizon to send telemetry to the address and port the
+application listens on (defaults: `127.0.0.1:8800`), then run:
 
 ```sh
 zig build run
@@ -186,7 +187,8 @@ The process listens continuously for telemetry. Stop it with `Ctrl-C`.
 
 Telemetry frames with `IsRaceOn == 0` are treated as paused or menu state. The
 application sends a reset report that releases both triggers, zeros rumble,
-turns off the lightbar and gear LEDs, and silences audio haptics.
+and silences audio haptics. If `--lightbar` or `--leds` is active, those are
+also turned off.
 
 ## License
 
