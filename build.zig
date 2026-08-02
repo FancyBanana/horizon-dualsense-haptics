@@ -22,20 +22,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const mod = b.addModule("zig_forza_haptics", .{
+    const mod = b.addModule("horizon_dualsesne_haptics", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
     wireSdl(mod, sdl);
 
     const exe = b.addExecutable(.{
-        .name = "zig_forza_haptics",
+        .name = "horizon-dualsesne-haptics",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "zig_forza_haptics", .module = mod },
+                .{ .name = "horizon_dualsesne_haptics", .module = mod },
             },
         }),
     });
