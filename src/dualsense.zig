@@ -57,8 +57,6 @@ pub const Audio = struct {
     /// Speaker/haptics volume (byte 6). The PS5 firmware only honours the
     /// 0x3d..0x64 range; 0x64 = 100%.
     pub const SPEAKER_VOLUME_MAX: u8 = 0x64;
-    pub const HEADPHONE_VOLUME_MAX: u8 = 0x7f;
-    pub const MIC_VOLUME_MID: u8 = 0x40;
     /// SP preamp gain +6 dB (byte 38, `audio_control2`).
     pub const SP_PREAMP_GAIN_6DB: u8 = 0x02;
 };
@@ -68,7 +66,6 @@ pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation, firmware 2.2
 
 /// Trigger effect mode bytes (byte 0 of the 11-byte effect section).
 pub const EffectMode = enum(u8) {
-    stop = 0x00, // stop the effect, leave the actuator where it is
     reset = 0x05, // disengage the effect and withdraw the actuator
     rigid = 0x01, // uniform resistance: [start_pos, force]
     vibrate = 0x06, // vibration: [freq, amp, start_pos]
@@ -161,10 +158,6 @@ pub fn effectOff() Effect {
     return makeEffect(.reset, &.{});
 }
 
-pub fn effectStop() Effect {
-    return makeEffect(.stop, &.{});
-}
-
 /// Uniform resistance. `force` 0..255; 0 is a low force, not off.
 pub fn effectRigid(force: u8) Effect {
     return makeEffect(.rigid, &.{ 0, force });
@@ -203,9 +196,10 @@ fn packZones(zones: [10]u8) [6]u8 {
     var active: u16 = 0;
     var packed_bits: u32 = 0;
     for (zones, 0..) |z, i| {
-        if (z > 0) {
+        const level = @min(z, 8);
+        if (level > 0) {
             active |= @as(u16, 1) << @intCast(i);
-            packed_bits |= @as(u32, z - 1) << @intCast(3 * i);
+            packed_bits |= @as(u32, level - 1) << @intCast(3 * i);
         }
     }
     return .{
@@ -287,4 +281,7 @@ test "trigger effect encodings" {
     try std.testing.expectEqual(0xFF, all[5]); // packed bits 16-23
     try std.testing.expectEqual(0x3F, all[6]); // packed bits 24-29 (30 bits)
     try std.testing.expectEqual(20, all[9]); // frequency byte
+
+    const clamped = effectRigidZones(.{ 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 });
+    try std.testing.expectEqual(0x3F, clamped[6]);
 }

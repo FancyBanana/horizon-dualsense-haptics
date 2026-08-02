@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 const std = @import("std");
+const builtin = @import("builtin");
 
+/// This is (probably) byte-accurate layout of a
+/// Forza Horizon 5 telemetry frame.
 pub const HorizonFrame = struct {
     // sled
     IsRaceOn: i32 = 0,
@@ -97,18 +100,42 @@ pub const HorizonFrame = struct {
     HorizonTrailingUnknown: u8 = 0,
 };
 
-pub fn parse_packet(reader: *std.Io.Reader) !HorizonFrame {
+pub const PACKET_SIZE = 324;
+
+comptime {
+    if (@sizeOf(HorizonFrame) != PACKET_SIZE) {
+        @compileError("HorizonFrame must be exactly 324 bytes");
+    }
+}
+
+/// Parses data from a Forza Horizon 5 telemetry packet.
+pub fn parseHorizonPacket(reader: *std.Io.Reader) !HorizonFrame {
     var frame = HorizonFrame{};
 
     inline for (@typeInfo(HorizonFrame).@"struct".fields) |field| {
         const bytes = try reader.take(@sizeOf(field.type));
 
-        switch (field.type) {
-            bool => @field(frame, field.name) = bytes[0] != 0,
-            else => @field(frame, field.name) =
-                std.mem.bytesToValue(field.type, bytes),
-        }
+        @field(frame, field.name) = readLittleEndian(field.type, bytes);
     }
 
     return frame;
+}
+
+fn readLittleEndian(comptime T: type, bytes: []const u8) T {
+    const value = std.mem.bytesToValue(T, bytes);
+    if (builtin.cpu.arch.endian() == .little) return value;
+
+    const Bits = std.meta.Int(.unsigned, @bitSizeOf(T));
+    return @bitCast(@byteSwap(@as(Bits, @bitCast(value))));
+}
+
+test "parses little-endian telemetry fields" {
+    var bytes = [_]u8{0} ** PACKET_SIZE;
+    bytes[0..4].* = .{ 1, 0, 0, 0 };
+    bytes[4..8].* = .{ 0x78, 0x56, 0x34, 0x12 };
+
+    var reader = std.Io.Reader.fixed(&bytes);
+    const frame = try parseHorizonPacket(&reader);
+    try std.testing.expectEqual(@as(i32, 1), frame.IsRaceOn);
+    try std.testing.expectEqual(@as(u32, 0x12345678), frame.TimestampMS);
 }

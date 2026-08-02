@@ -7,9 +7,9 @@
 //! audio interface).
 
 const std = @import("std");
-const audio = @import("audio.zig");
 
 pub const DEFAULT_CONFIG_PATH = "forza-haptics.conf";
+pub const DEFAULT_AUDIO_SINK = "dualsense";
 
 pub const MotorMode = enum {
     simple,
@@ -25,7 +25,7 @@ pub const MotorMode = enum {
 pub const Config = struct {
     mode: MotorMode = .audio,
     audio_gain: f32 = 0.75,
-    audio_sink: []const u8 = audio.DEFAULT_SINK_NAME,
+    audio_sink: []const u8 = DEFAULT_AUDIO_SINK,
 
     pub fn load(io: std.Io, allocator: std.mem.Allocator, path: []const u8) Config {
         var cfg = Config{};
@@ -33,9 +33,10 @@ pub const Config = struct {
             return cfg;
         };
         defer allocator.free(contents);
+        var owned_sink: ?[]u8 = null;
         var lines = std.mem.splitScalar(u8, contents, '\n');
         while (lines.next()) |raw| {
-            var line = std.mem.trim(u8, raw, " \t\r");
+            const line = std.mem.trim(u8, raw, " \t\r");
             if (line.len == 0 or line[0] == '#') continue;
             const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
             const key = std.mem.trim(u8, line[0..eq], " \t");
@@ -44,9 +45,13 @@ pub const Config = struct {
                 if (MotorMode.parse(value)) |m| cfg.mode = m;
             } else if (std.mem.eql(u8, key, "audio-gain")) {
                 const g = std.fmt.parseFloat(f32, value) catch continue;
+                if (!std.math.isFinite(g)) continue;
                 cfg.audio_gain = std.math.clamp(g, 0.0, 1.0);
             } else if (std.mem.eql(u8, key, "audio-sink")) {
-                cfg.audio_sink = allocator.dupe(u8, value) catch continue;
+                const sink = allocator.dupe(u8, value) catch continue;
+                if (owned_sink) |old| allocator.free(old);
+                owned_sink = sink;
+                cfg.audio_sink = sink;
             }
         }
         return cfg;

@@ -1,6 +1,6 @@
-# horizon-dualsesne-haptics
+# horizon-dualsense-haptics
 
-`horizon-dualsesne-haptics` is a Zig application that converts Forza Horizon
+`horizon-dualsense-haptics` is a Zig application that converts Forza Horizon
 telemetry into haptic feedback for a Sony DualSense controller. It listens for
 the game's 324-byte UDP telemetry packets, maps wheel, brake, gear, and engine
 events to controller effects, and sends those effects through the DualSense
@@ -39,7 +39,7 @@ zig build test
 The executable is written to:
 
 ```text
-zig-out/bin/horizon-dualsesne-haptics
+zig-out/bin/horizon-dualsense-haptics
 ```
 
 Use `-Doptimize=ReleaseFast` for an optimized build:

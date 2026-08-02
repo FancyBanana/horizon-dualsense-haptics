@@ -23,10 +23,11 @@ pub const Device = struct {
 
     /// Scans /dev/hidraw* and opens the first node whose sysfs uevent reports
     /// a DualSense VID/PID. On some kernels the controller exposes several
-    /// hidraw nodes (gamepad, sensors, audio); the first one that opens is
-    /// used, which is the gamepad interface.
+    /// hidraw nodes (gamepad, sensors, audio); the first matching node that
+    /// opens is used.
     pub fn open(io: std.Io) Error!Device {
         var minor: u32 = 0;
+        var access_denied = false;
         while (minor < 64) : (minor += 1) {
             const bus = dualsenseBus(io, minor) orelse continue;
 
@@ -36,10 +37,11 @@ pub const Device = struct {
             const rc = linux.open(path, O_RDWR_NONBLOCK, 0);
             switch (linux.errno(rc)) {
                 .SUCCESS => return .{ .fd = @intCast(rc), .bus = bus },
-                .ACCES => return error.AccessDenied,
+                .ACCES => access_denied = true,
                 else => continue,
             }
         }
+        if (access_denied) return error.AccessDenied;
         return error.DeviceNotFound;
     }
 
@@ -54,19 +56,19 @@ pub const Device = struct {
         }
     }
 
+    pub fn close(self: *Device) void {
+        if (self.fd >= 0) {
+            _ = linux.close(self.fd);
+            self.fd = -1;
+        }
+    }
+
     fn writeBytes(self: *const Device, bytes: [*]const u8, size: usize) Error!void {
         const rc = linux.write(self.fd, bytes, size);
         switch (linux.errno(rc)) {
             .SUCCESS => if (rc != size) return error.WriteFailed,
             .AGAIN => return error.WouldBlock, // drop this frame
             else => return error.WriteFailed,
-        }
-    }
-
-    pub fn close(self: *Device) void {
-        if (self.fd >= 0) {
-            _ = linux.close(self.fd);
-            self.fd = -1;
         }
     }
 };

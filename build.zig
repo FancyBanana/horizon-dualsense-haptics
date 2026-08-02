@@ -2,12 +2,6 @@
 
 const std = @import("std");
 
-// Although this function looks imperative, it does not perform the build
-// directly and instead it mutates the build graph (`b`) that will be then
-// executed by an external runner. The functions in `std.Build` implement a DSL
-// for defining build steps and express dependencies between them, allowing the
-// build runner to parallelize the build automatically (and the cache system to
-// know when a step doesn't need to be re-run).
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -22,21 +16,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const mod = b.addModule("horizon_dualsesne_haptics", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-    });
-    wireSdl(mod, sdl);
-
     const exe = b.addExecutable(.{
-        .name = "horizon-dualsesne-haptics",
+        .name = "horizon-dualsense-haptics",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "horizon_dualsesne_haptics", .module = mod },
-            },
         }),
     });
     wireSdl(exe.root_module, sdl);
@@ -50,19 +35,7 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
-    // Zig only executes `test` blocks declared in the tested root file, so the
-    // unit tests that live in the other src/*.zig files need their own test
-    // steps or they would be compiled but never run.
+    // Each source file with tests gets its own root so Zig executes those tests.
     const haptics_test_mod = b.createModule(.{
         .root_source_file = b.path("src/haptics.zig"),
         .target = target,
@@ -90,11 +63,20 @@ pub fn build(b: *std.Build) void {
     }));
 
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_haptics_tests.step);
     test_step.dependOn(&run_dualsense_tests.step);
     test_step.dependOn(&run_parser_tests.step);
+
+    if (target.result.os.tag == .linux) {
+        const run_device_tests = b.addRunArtifact(b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/device_linux.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        }));
+        test_step.dependOn(&run_device_tests.step);
+    }
 }
 
 /// Gives a module what it needs to `@cImport` and link the statically built

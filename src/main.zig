@@ -10,6 +10,8 @@ const config = @import("config.zig");
 
 const print = std.debug.print;
 
+const MAX_FRAME_GAP_MS: u32 = 250; // do not stall on pauses in a capture
+
 /// App-owned runtime state: the audio backend must outlive the haptics object
 /// that references it, so both live on the caller's stack and are wired up
 /// with the internal `&` pointers only after this struct's address is fixed.
@@ -18,13 +20,6 @@ const App = struct {
     audio: audio.AudioHaptics = .{},
     cfg: config.Config = .{},
 };
-
-fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
-    const self: *haptics.Haptics = @ptrCast(@alignCast(ctx));
-    var reader = Io.Reader.fixed(data);
-    const frame = try parser.parse_packet(&reader);
-    self.update(io, &frame);
-}
 
 pub fn main(init: std.process.Init) !void {
     if (hasArg(init, "--selftest")) {
@@ -40,20 +35,40 @@ pub fn main(init: std.process.Init) !void {
     var app: App = .{};
     try setupApp(init, &app);
     defer app.audio.stop();
-    try listener.udp_listen(init, .{
+    defer app.hap.shutdown();
+    try listener.listen(init, .{
         .context = &app.hap,
         .process = processFrame,
     }, .{ .save_packets = hasArg(init, "--save-packets") });
 }
 
-/// Loads the config file, applies CLI overrides, and starts the audio backend
-/// when audio motor mode is selected (falling back to simple rumble if the
-/// DualSense USB sink cannot be reached).
+fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
+    const self: *haptics.Haptics = @ptrCast(@alignCast(ctx));
+    var reader = Io.Reader.fixed(data);
+    const frame = try parser.parseHorizonPacket(&reader);
+    self.update(io, &frame);
+}
+
+/// Loads configuration, applies command-line overrides, and starts the audio
+/// backend when audio motor mode is selected.
 fn setupApp(init: std.process.Init, app: *App) !void {
     app.cfg = config.Config.load(init.io, init.arena.allocator(), config.DEFAULT_CONFIG_PATH);
+    try applyCommandLineOverrides(init, &app.cfg);
 
+    app.hap.motor_mode = app.cfg.mode;
+    if (app.cfg.mode == .audio) {
+        app.audio = .{ .sink_name = app.cfg.audio_sink, .gain = app.cfg.audio_gain };
+        app.hap.audio = &app.audio;
+        if (!app.audio.start(init.io)) {
+            print("audio: no DualSense USB sink, falling back to simple rumble\n", .{});
+            app.hap.motor_mode = .simple;
+        }
+    }
+}
+
+fn applyCommandLineOverrides(init: std.process.Init, cfg: *config.Config) !void {
     if (argValue(init, "--motor-mode")) |v| {
-        app.cfg.mode = config.MotorMode.parse(v) orelse {
+        cfg.mode = config.MotorMode.parse(v) orelse {
             print("invalid --motor-mode '{s}' (expected simple|audio)\n", .{v});
             return error.InvalidMotorMode;
         };
@@ -61,22 +76,13 @@ fn setupApp(init: std.process.Init, app: *App) !void {
     if (hasArg(init, "--bluetooth")) {
         // Bluetooth exposes rumble and trigger HID reports, but not the USB
         // audio stream used by the native audio-haptics backend.
-        app.cfg.mode = .simple;
+        cfg.mode = .simple;
     }
-    if (argValue(init, "--audio-sink")) |v| app.cfg.audio_sink = v;
+    if (argValue(init, "--audio-sink")) |v| cfg.audio_sink = v;
     if (argValue(init, "--audio-gain")) |v| {
-        app.cfg.audio_gain = std.math.clamp(try std.fmt.parseFloat(f32, v), 0, 1);
-    }
-
-    app.hap.motor_mode = app.cfg.mode;
-    if (app.cfg.mode == .audio) {
-        app.audio = .{ .sink_name = app.cfg.audio_sink, .gain = app.cfg.audio_gain };
-        app.audio.start(init.io);
-        app.hap.audio = &app.audio;
-        if (!app.audio.waitConnected(init.io, 3000)) {
-            print("audio: no DualSense USB sink, falling back to simple rumble\n", .{});
-            app.hap.motor_mode = .simple;
-        }
+        const gain = try std.fmt.parseFloat(f32, v);
+        if (!std.math.isFinite(gain)) return error.InvalidAudioGain;
+        cfg.audio_gain = std.math.clamp(gain, 0, 1);
     }
 }
 
@@ -89,7 +95,7 @@ fn selftest(init: std.process.Init) !void {
 
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(io, &file_buffer);
-    const data = try parser.parse_packet(&file_reader.interface);
+    const data = try parser.parseHorizonPacket(&file_reader.interface);
 
     std.debug.print("Packet data:\n{any}", .{data});
 }
@@ -116,9 +122,6 @@ fn audioTest(init: std.process.Init) !void {
     while (true) try std.Io.sleep(init.io, .{ .nanoseconds = std.time.ns_per_s }, .boot);
 }
 
-const CAPTURED_PACKET_SIZE = 324;
-const MAX_FRAME_GAP_MS: u32 = 250; // don't stall on pauses in the capture
-
 /// Replays the captured data/packet-*.udp frames through the DualSense, paced
 /// by each packet's own TimestampMS (≈100 Hz). Add --loop to repeat forever;
 /// --speed <factor> scales the playback rate (1.0 = original cadence).
@@ -127,17 +130,17 @@ fn replay(init: std.process.Init) !void {
     var app: App = .{};
     try setupApp(init, &app);
     defer app.audio.stop();
-    var hap = &app.hap;
+    defer app.hap.shutdown();
+    const hap = &app.hap;
 
     const loop_forever = hasArg(init, "--loop");
     var speed: f32 = 1.0;
     if (argValue(init, "--speed")) |v| {
         speed = try std.fmt.parseFloat(f32, v);
-        if (speed <= 0) return error.InvalidSpeed;
+        if (!std.math.isFinite(speed) or speed <= 0) return error.InvalidSpeed;
     }
 
     print("replay: sending captured frames to the DualSense (Ctrl-C to stop)\n", .{});
-    var total: usize = 0;
     while (true) {
         var index: usize = 1;
         var prev_ts: ?u32 = null;
@@ -148,12 +151,12 @@ fn replay(init: std.process.Init) !void {
             const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only }) catch break;
             defer file.close(io);
 
-            var buf: [CAPTURED_PACKET_SIZE]u8 = undefined;
+            var buf: [parser.PACKET_SIZE]u8 = undefined;
             const n = try file.readStreaming(io, &.{buf[0..]});
-            if (n != CAPTURED_PACKET_SIZE) break;
+            if (n != parser.PACKET_SIZE) break;
 
             var reader = Io.Reader.fixed(buf[0..n]);
-            const frame = try parser.parse_packet(&reader);
+            const frame = try parser.parseHorizonPacket(&reader);
 
             if (prev_ts) |prev| {
                 const delta_ms = @min(frame.TimestampMS -% prev, MAX_FRAME_GAP_MS);
@@ -174,16 +177,14 @@ fn replay(init: std.process.Init) !void {
             return error.NoPackets;
         }
 
-        total += count;
         print("replayed {d} frames\n", .{count});
         if (!loop_forever) break;
     }
-
-    hap.shutdown();
 }
 
 fn hasArg(init: std.process.Init, needle: []const u8) bool {
-    var it = std.process.Args.Iterator.init(init.minimal.args);
+    var it = std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa) catch return false;
+    defer it.deinit();
     _ = it.next(); // argv[0]
     while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, needle)) return true;
@@ -192,10 +193,14 @@ fn hasArg(init: std.process.Init, needle: []const u8) bool {
 }
 
 fn argValue(init: std.process.Init, needle: []const u8) ?[]const u8 {
-    var it = std.process.Args.Iterator.init(init.minimal.args);
+    var it = std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa) catch return null;
+    defer it.deinit();
     _ = it.next(); // argv[0]
     while (it.next()) |arg| {
-        if (std.mem.eql(u8, arg, needle)) return it.next();
+        if (std.mem.eql(u8, arg, needle)) {
+            const value = it.next() orelse return null;
+            return init.arena.allocator().dupe(u8, value) catch return null;
+        }
     }
     return null;
 }

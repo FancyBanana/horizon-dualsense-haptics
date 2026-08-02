@@ -15,7 +15,6 @@ const print = std.debug.print;
 pub const Params = struct {
     // L2 (brake)
     brake_deadzone: u8 = 40,
-    brake_max_force: u8 = 200,
     brake_zone_max: u8 = 8, // top zone resistance level (1..8) at full brake
     handbrake_force: u8 = 220,
     abs_brake_threshold: u8 = 100,
@@ -42,8 +41,8 @@ pub const Params = struct {
     // shared
     shift_burst_freq: u8 = 20,
     shift_burst_amp: u8 = 130,
-    shift_burst_ms: i128 = 80,
-    low_speed_ms: f32 = 5.0, // m/s: below this trust wheel rotation, not slip
+    shift_burst_ms: i64 = 80,
+    low_speed_mps: f32 = 5.0, // below this trust wheel rotation, not slip
 };
 
 const AudioCue = struct {
@@ -51,29 +50,13 @@ const AudioCue = struct {
     freq: f32 = 90,
 };
 
-fn sideAudioCue(surface: f32, wheel_rotation: f32, combined_slip: f32, on_strip: bool, puddle: f32) AudioCue {
-    const slip = std.math.clamp(combined_slip, 0, 3);
-    const strip_amp: f32 = if (on_strip) 0.22 else 0;
-    const puddle_amp = std.math.clamp(puddle, 0, 1) * 0.08;
-    const amp = std.math.clamp(std.math.clamp(surface, 0, 1) + slip * 0.10 + strip_amp + puddle_amp, 0, 1);
-
-    const strip_freq: f32 = if (on_strip) 30 else 0;
-    const puddle_freq = std.math.clamp(puddle, 0, 1) * 10;
-    const freq = std.math.clamp(
-        45 + std.math.clamp(wheel_rotation, 0, 120) * 1.1 + slip * 18 + strip_freq - puddle_freq,
-        45,
-        220,
-    );
-    return .{ .amp = amp, .freq = freq };
-}
-
 pub const Haptics = struct {
     device: device.Device = .{},
     params: Params = .{},
     prev_gear: ?u8 = null,
-    shift_until_ms: i128 = 0,
-    last_open_attempt_ms: i128 = -1_000_000,
-    reconnect_interval_ms: i128 = 1_000,
+    shift_until_ms: i64 = 0,
+    last_open_attempt_ms: i64 = -1_000_000,
+    reconnect_interval_ms: i64 = 1_000,
     waiting_hinted: bool = false,
 
     /// How the main motors are driven. `audio` publishes intensities to the
@@ -100,35 +83,6 @@ pub const Haptics = struct {
         };
     }
 
-    /// Publishes side-specific road, slip, rumble-strip, and wheel-speed cues
-    /// to the audio backend, if enabled. Amplitude follows the game's surface
-    /// force while frequency follows the physical wheel state, which keeps
-    /// the audio haptics from becoming one undifferentiated 90 Hz buzz.
-    /// Called even when the hidraw device is not connected, so the audio
-    /// haptics keep working whenever the game is streaming.
-    fn updateAudio(self: *Haptics, frame: *const parser.HorizonFrame) void {
-        if (self.motor_mode != .audio) return;
-        const a = self.audio orelse return;
-        const racing = frame.IsRaceOn != 0;
-        const l = if (racing) sideAudioCue(
-            max2(frame.SurfaceRumbleFl, frame.SurfaceRumbleRl),
-            max2(@abs(frame.WheelRotationSpeedFl), @abs(frame.WheelRotationSpeedRl)),
-            max2(@abs(frame.TireCombinedSlipFl), @abs(frame.TireCombinedSlipRl)),
-            frame.WheelOnRumbleStripFl != 0 or frame.WheelOnRumbleStripRl != 0,
-            max2(frame.WheelInPuddleDepthFl, frame.WheelInPuddleDepthRl),
-        ) else AudioCue{};
-        const r = if (racing) sideAudioCue(
-            max2(frame.SurfaceRumbleFr, frame.SurfaceRumbleRr),
-            max2(@abs(frame.WheelRotationSpeedFr), @abs(frame.WheelRotationSpeedRr)),
-            max2(@abs(frame.TireCombinedSlipFr), @abs(frame.TireCombinedSlipRr)),
-            frame.WheelOnRumbleStripFr != 0 or frame.WheelOnRumbleStripRr != 0,
-            max2(frame.WheelInPuddleDepthFr, frame.WheelInPuddleDepthRr),
-        ) else AudioCue{};
-        a.setIntensity(l.amp, r.amp);
-        a.setFrequency(l.freq, r.freq);
-        a.setActive(racing);
-    }
-
     /// Runs the telemetry -> effects mapping without touching any hardware.
     /// This is what the offline replay test (`zig build test`) exercises.
     pub fn buildReport(self: *Haptics, io: Io, frame: *const parser.HorizonFrame) ds.OutputReport {
@@ -136,16 +90,7 @@ pub const Haptics = struct {
 
         self.updateMotors(frame, &report);
 
-        if (self.motor_mode == .audio) {
-            // Enable the native audio-haptics path. These are the exact flag
-            // bits the kernel driver writes when it routes the internal
-            // speaker and voice-coil actuators to the USB audio stream.
-            report.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
-            report.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
-            report.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
-            report.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
-            report.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
-        }
+        self.configureAudioReport(&report);
 
         const now_ms = nowMillis(io);
         self.updateGearShift(frame, now_ms);
@@ -153,6 +98,21 @@ pub const Haptics = struct {
         report.left_trigger_effect = self.leftTrigger(frame, now_ms);
 
         return report;
+    }
+
+    /// Releases the triggers and motors, then closes the device.
+    /// Safe to call when disconnected.
+    pub fn shutdown(self: *Haptics) void {
+        if (self.audio) |a| {
+            a.setActive(false);
+            a.setIntensity(0, 0);
+        }
+        if (!self.device.connected()) return;
+        var report: ds.OutputReport = .{};
+        report.right_trigger_effect = ds.effectOff();
+        report.left_trigger_effect = ds.effectOff();
+        _ = self.device.writeReport(&report) catch {};
+        self.device.close();
     }
 
     fn ensureConnected(self: *Haptics, io: Io) void {
@@ -172,19 +132,44 @@ pub const Haptics = struct {
         }
     }
 
-    /// Releases the triggers and motors, then closes the device.
-    /// Safe to call when disconnected.
-    pub fn shutdown(self: *Haptics) void {
-        if (self.audio) |a| {
-            a.setActive(false);
-            a.setIntensity(0, 0);
-        }
-        if (!self.device.connected()) return;
-        var report: ds.OutputReport = .{};
-        report.right_trigger_effect = ds.effectOff();
-        report.left_trigger_effect = ds.effectOff();
-        _ = self.device.writeReport(&report) catch {};
-        self.device.close();
+    fn configureAudioReport(self: *const Haptics, report: *ds.OutputReport) void {
+        if (self.motor_mode != .audio) return;
+
+        // These are the exact flag bits the kernel driver writes when it
+        // routes the internal speaker and voice-coil actuators to USB audio.
+        report.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
+        report.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
+        report.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
+        report.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
+        report.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
+    }
+
+    /// Publishes side-specific road, slip, rumble-strip, and wheel-speed cues
+    /// to the audio backend, if enabled. Called even when the hidraw device is
+    /// disconnected so audio haptics keep working while telemetry is active.
+    fn updateAudio(self: *Haptics, frame: *const parser.HorizonFrame) void {
+        if (self.motor_mode != .audio) return;
+        const audio_backend = self.audio orelse return;
+        const racing = frame.IsRaceOn != 0;
+
+        const left = if (racing) sideAudioCue(
+            max2(frame.SurfaceRumbleFl, frame.SurfaceRumbleRl),
+            max2(@abs(frame.WheelRotationSpeedFl), @abs(frame.WheelRotationSpeedRl)),
+            max2(@abs(frame.TireCombinedSlipFl), @abs(frame.TireCombinedSlipRl)),
+            frame.WheelOnRumbleStripFl != 0 or frame.WheelOnRumbleStripRl != 0,
+            max2(frame.WheelInPuddleDepthFl, frame.WheelInPuddleDepthRl),
+        ) else AudioCue{};
+        const right = if (racing) sideAudioCue(
+            max2(frame.SurfaceRumbleFr, frame.SurfaceRumbleRr),
+            max2(@abs(frame.WheelRotationSpeedFr), @abs(frame.WheelRotationSpeedRr)),
+            max2(@abs(frame.TireCombinedSlipFr), @abs(frame.TireCombinedSlipRr)),
+            frame.WheelOnRumbleStripFr != 0 or frame.WheelOnRumbleStripRr != 0,
+            max2(frame.WheelInPuddleDepthFr, frame.WheelInPuddleDepthRr),
+        ) else AudioCue{};
+
+        audio_backend.setIntensity(left.amp, right.amp);
+        audio_backend.setFrequency(left.freq, right.freq);
+        audio_backend.setActive(racing);
     }
 
     fn updateMotors(self: *const Haptics, frame: *const parser.HorizonFrame, report: *ds.OutputReport) void {
@@ -202,7 +187,7 @@ pub const Haptics = struct {
         }
     }
 
-    fn updateGearShift(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i128) void {
+    fn updateGearShift(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) void {
         if (self.prev_gear) |prev| {
             if (prev != frame.Gear) {
                 self.shift_until_ms = now_ms + self.params.shift_burst_ms;
@@ -212,7 +197,7 @@ pub const Haptics = struct {
     }
 
     /// Left trigger = L2 = brake.
-    fn leftTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i128) ds.Effect {
+    fn leftTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.Effect {
         const p = self.params;
         if (frame.IsRaceOn == 0) return ds.effectOff();
 
@@ -232,7 +217,7 @@ pub const Haptics = struct {
     }
 
     /// Right trigger = R2 = throttle.
-    fn rightTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i128) ds.Effect {
+    fn rightTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.Effect {
         const p = self.params;
         if (frame.IsRaceOn == 0) return ds.effectOff();
 
@@ -243,10 +228,11 @@ pub const Haptics = struct {
             return ds.effectVibrateZones(zoneBand(p.rev_limit_zone_start, zoneAmp(p.rev_limit_amp)), p.rev_limit_freq);
         }
 
-        if (frame.Accel >= p.wheelspin_accel_threshold) {
-            if (self.wheelSpinning(frame)) {
-                return ds.effectVibrateZones(zoneBand(p.wheelspin_zone_start, zoneAmp(p.wheelspin_amp)), self.wheelspinFreq(frame));
-            }
+        if (frame.Accel >= p.wheelspin_accel_threshold and self.wheelSpinning(frame)) {
+            return ds.effectVibrateZones(
+                zoneBand(p.wheelspin_zone_start, zoneAmp(p.wheelspin_amp)),
+                self.wheelspinFreq(frame),
+            );
         }
 
         return ds.effectRigid(ramp(frame.Accel, p.throttle_deadzone, p.throttle_max_force));
@@ -260,7 +246,7 @@ pub const Haptics = struct {
 
     fn wheelSpinning(self: *const Haptics, frame: *const parser.HorizonFrame) bool {
         const p = self.params;
-        if (frame.Speed > p.low_speed_ms) {
+        if (frame.Speed > p.low_speed_mps) {
             return maxAbs4(frame.TireCombinedSlipFl, frame.TireCombinedSlipFr, frame.TireCombinedSlipRl, frame.TireCombinedSlipRr) >= p.wheelspin_slip_threshold;
         }
         // Slip ratios degenerate at standstill; trust raw wheel rotation.
@@ -277,14 +263,34 @@ pub const Haptics = struct {
     /// value 0..255 -> 0..max_force above the deadzone.
     fn ramp(value: u8, deadzone: u8, max_force: u8) u8 {
         if (value <= deadzone) return 0;
-        const span = 255 - deadzone;
+        const span: u32 = 255 - deadzone;
         const f = @as(u32, max_force) * @as(u32, value - deadzone) / span;
         return @intCast(f);
     }
 };
 
+fn sideAudioCue(surface: f32, wheel_rotation: f32, combined_slip: f32, on_strip: bool, puddle: f32) AudioCue {
+    const safe_surface = finiteOrZero(surface);
+    const safe_rotation = finiteOrZero(wheel_rotation);
+    const safe_slip = finiteOrZero(combined_slip);
+    const safe_puddle = finiteOrZero(puddle);
+    const slip = std.math.clamp(safe_slip, 0, 3);
+    const strip_amp: f32 = if (on_strip) 0.22 else 0;
+    const puddle_amp = std.math.clamp(safe_puddle, 0, 1) * 0.08;
+    const amp = std.math.clamp(std.math.clamp(safe_surface, 0, 1) + slip * 0.10 + strip_amp + puddle_amp, 0, 1);
+
+    const strip_freq: f32 = if (on_strip) 30 else 0;
+    const puddle_freq = std.math.clamp(safe_puddle, 0, 1) * 10;
+    const freq = std.math.clamp(
+        45 + std.math.clamp(safe_rotation, 0, 120) * 1.1 + slip * 18 + strip_freq - puddle_freq,
+        45,
+        220,
+    );
+    return .{ .amp = amp, .freq = freq };
+}
+
 fn scaleMotor(v: f32) u8 {
-    return @intFromFloat(std.math.clamp(v, 0, 1) * 255.0);
+    return @intFromFloat(std.math.clamp(finiteOrZero(v), 0, 1) * 255.0);
 }
 
 /// Zones 0..9 with resistance rising 0..`mag` along the pull (0 => all off).
@@ -302,7 +308,8 @@ fn risingZones(mag: u8) [10]u8 {
 fn zoneBand(start: u8, amp: u8) [10]u8 {
     var zones = [_]u8{0} ** 10;
     const a = std.math.clamp(amp, 1, 8);
-    for (zones[@as(usize, start)..]) |*z| z.* = a;
+    const first = @min(@as(usize, start), zones.len);
+    for (zones[first..]) |*z| z.* = a;
     return zones;
 }
 
@@ -312,18 +319,22 @@ fn zoneAmp(a: u8) u8 {
 }
 
 fn max2(a: f32, b: f32) f32 {
-    return if (a > b) a else b;
+    const left = finiteOrZero(a);
+    const right = finiteOrZero(b);
+    return if (left > right) left else right;
+}
+
+fn finiteOrZero(value: f32) f32 {
+    return if (std.math.isFinite(value)) value else 0;
 }
 
 fn maxAbs4(a: f32, b: f32, c: f32, d: f32) f32 {
     return max2(max2(@abs(a), @abs(b)), max2(@abs(c), @abs(d)));
 }
 
-fn nowMillis(io: Io) i128 {
-    return @intCast(platform.nowMillis(io));
+fn nowMillis(io: Io) i64 {
+    return platform.nowMillis(io);
 }
-
-const CAPTURED_PACKET_SIZE = 324;
 
 // Offline replay: run every captured packet through the mapping and check the
 // produced report is structurally sane. No DualSense required.
@@ -342,12 +353,12 @@ test "replay all captured packets through the mapping" {
         const file = std.Io.Dir.cwd().openFile(std.testing.io, path, .{ .mode = .read_only }) catch break;
         defer file.close(std.testing.io);
 
-        var buf: [CAPTURED_PACKET_SIZE]u8 = undefined;
+        var buf: [parser.PACKET_SIZE]u8 = undefined;
         const n = try file.readStreaming(std.testing.io, &.{buf[0..]});
-        if (n != CAPTURED_PACKET_SIZE) return error.UnexpectedEndOfStream;
+        if (n != parser.PACKET_SIZE) return error.UnexpectedEndOfStream;
 
         var reader = Io.Reader.fixed(buf[0..n]);
-        const frame = try parser.parse_packet(&reader);
+        const frame = try parser.parseHorizonPacket(&reader);
         const report = hap.buildReport(std.testing.io, &frame);
 
         try std.testing.expectEqual(ds.Flag0.AUDIO_HAPTICS, report.valid_flag0);
@@ -416,6 +427,9 @@ test "trigger zone helpers" {
     try std.testing.expectEqual(@as(u8, 0), band[4]);
     try std.testing.expectEqual(@as(u8, 6), band[5]);
     try std.testing.expectEqual(@as(u8, 6), band[9]);
+
+    const empty = zoneBand(255, 6);
+    for (empty) |v| try std.testing.expectEqual(@as(u8, 0), v);
 
     // amplitude byte -> zone level
     try std.testing.expectEqual(@as(u8, 8), zoneAmp(255));
