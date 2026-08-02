@@ -109,13 +109,16 @@ comptime {
 }
 
 /// Parses data from a Forza Horizon 5 telemetry packet.
-pub fn parseHorizonPacket(reader: *std.Io.Reader) !HorizonFrame {
+pub fn parseHorizonPacket(data: [324]u8) HorizonFrame {
     var frame = HorizonFrame{};
+    var offset: usize = 0;
 
     inline for (@typeInfo(HorizonFrame).@"struct".fields) |field| {
-        const bytes = try reader.take(@sizeOf(field.type));
+        const end = offset + @sizeOf(field.type);
+        const bytes = data[offset..end];
 
         @field(frame, field.name) = readLittleEndian(field.type, bytes);
+        offset = end;
     }
 
     return frame;
@@ -134,8 +137,7 @@ test "parses little-endian telemetry fields" {
     bytes[0..4].* = .{ 1, 0, 0, 0 };
     bytes[4..8].* = .{ 0x78, 0x56, 0x34, 0x12 };
 
-    var reader = std.Io.Reader.fixed(&bytes);
-    const frame = try parseHorizonPacket(&reader);
+    const frame = parseHorizonPacket(bytes);
     try std.testing.expectEqual(@as(i32, 1), frame.IsRaceOn);
     try std.testing.expectEqual(@as(u32, 0x12345678), frame.TimestampMS);
 }

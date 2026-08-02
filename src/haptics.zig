@@ -357,8 +357,7 @@ test "replay all captured packets through the mapping" {
         const n = try file.readStreaming(std.testing.io, &.{buf[0..]});
         if (n != parser.PACKET_SIZE) return error.UnexpectedEndOfStream;
 
-        var reader = Io.Reader.fixed(buf[0..n]);
-        const frame = try parser.parseHorizonPacket(&reader);
+        const frame = parser.parseHorizonPacket(buf);
         const report = hap.buildReport(std.testing.io, &frame);
 
         try std.testing.expectEqual(ds.Flag0.AUDIO_HAPTICS, report.valid_flag0);

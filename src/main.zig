@@ -44,8 +44,9 @@ pub fn main(init: std.process.Init) !void {
 
 fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
     const self: *haptics.Haptics = @ptrCast(@alignCast(ctx));
-    var reader = Io.Reader.fixed(data);
-    const frame = try parser.parseHorizonPacket(&reader);
+    var packet: [parser.PACKET_SIZE]u8 = undefined;
+    @memcpy(&packet, data);
+    const frame = parser.parseHorizonPacket(packet);
     self.update(io, &frame);
 }
 
@@ -93,9 +94,10 @@ fn selftest(init: std.process.Init) !void {
     const file = try std.Io.Dir.cwd().openFile(io, "data/packet-300.udp", .{ .mode = .read_only });
     defer file.close(io);
 
-    var file_buffer: [4096]u8 = undefined;
-    var file_reader = file.reader(io, &file_buffer);
-    const data = try parser.parseHorizonPacket(&file_reader.interface);
+    var packet: [parser.PACKET_SIZE]u8 = undefined;
+    const n = try file.readStreaming(io, &.{packet[0..]});
+    if (n != parser.PACKET_SIZE) return error.UnexpectedEndOfStream;
+    const data = parser.parseHorizonPacket(packet);
 
     std.debug.print("Packet data:\n{any}", .{data});
 }
@@ -155,8 +157,7 @@ fn replay(init: std.process.Init) !void {
             const n = try file.readStreaming(io, &.{buf[0..]});
             if (n != parser.PACKET_SIZE) break;
 
-            var reader = Io.Reader.fixed(buf[0..n]);
-            const frame = try parser.parseHorizonPacket(&reader);
+            const frame = parser.parseHorizonPacket(buf);
 
             if (prev_ts) |prev| {
                 const delta_ms = @min(frame.TimestampMS -% prev, MAX_FRAME_GAP_MS);
