@@ -28,10 +28,8 @@ const CommandLineArgs = struct {
     selftest: bool = false,
     /// Replay captured packets through the controller.
     replay: bool = false,
-    /// Emit an audio channel test tone.
-    audio_test: bool = false,
-    /// Optional channel number for `--audio-test`.
-    audio_test_channel: ?[]const u8 = null,
+    /// Optional channel number for an audio test tone; null disables the test.
+    audio_test: ?[]const u8 = null,
     /// Repeat replay mode indefinitely.
     loop: bool = false,
     /// Requested `simple` or `audio` motor mode.
@@ -48,6 +46,10 @@ const CommandLineArgs = struct {
     save_packets: bool = false,
     /// Maximum number of packets to save.
     capture_count: ?u32 = null,
+    /// IP address on which to receive telemetry.
+    ip_address: ?[]const u8 = null,
+    /// UDP port on which to receive telemetry.
+    port: ?u16 = null,
 };
 
 /// Runs the selected runtime mode.
@@ -59,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.replay) {
         return replay(init, args);
     }
-    if (args.audio_test) {
+    if (args.audio_test != null) {
         return audioTest(init, args);
     }
 
@@ -71,6 +73,8 @@ pub fn main(init: std.process.Init) !void {
         .context = &app.hap,
         .process = processFrame,
     }, .{
+        .ip_address = args.ip_address orelse listener.DEFAULT_IP_ADDRESS,
+        .port = args.port orelse listener.DEFAULT_PORT,
         .save_packets = args.save_packets or args.capture_count != null,
         .max_saved_packets = args.capture_count orelse listener.DEFAULT_MAX_SAVED_PACKETS,
     });
@@ -132,36 +136,62 @@ fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
     _ = it.next(); // argv[0]
     var pending: ?[]const u8 = null;
     while (nextArgument(&it, &pending)) |arg| {
-        if (std.mem.eql(u8, arg, "--selftest")) {
-            args.selftest = true;
-        } else if (std.mem.eql(u8, arg, "--replay")) {
-            args.replay = true;
-        } else if (std.mem.eql(u8, arg, "--audio-test")) {
-            args.audio_test = true;
-            if (optionValue(&it, &pending)) |value| args.audio_test_channel = try copyArg(init, value);
-        } else if (std.mem.eql(u8, arg, "--loop")) {
-            args.loop = true;
-        } else if (std.mem.eql(u8, arg, "--bluetooth")) {
-            args.bluetooth = true;
-        } else if (std.mem.eql(u8, arg, "--save-packets")) {
-            args.save_packets = true;
-        } else if (std.mem.eql(u8, arg, "--motor-mode")) {
-            if (optionValue(&it, &pending)) |value| args.motor_mode = try copyArg(init, value);
-        } else if (std.mem.eql(u8, arg, "--audio-sink")) {
-            if (optionValue(&it, &pending)) |value| args.audio_sink = try copyArg(init, value);
-        } else if (std.mem.eql(u8, arg, "--audio-gain")) {
-            if (optionValue(&it, &pending)) |value| args.audio_gain = try copyArg(init, value);
-        } else if (std.mem.eql(u8, arg, "--speed")) {
-            if (optionValue(&it, &pending)) |value| args.speed = try copyArg(init, value);
-        } else if (std.mem.eql(u8, arg, "--capture-count")) {
-            if (optionValue(&it, &pending)) |value| {
-                const count = std.fmt.parseInt(u32, value, 10) catch return error.InvalidCaptureCount;
-                if (count == 0) return error.InvalidCaptureCount;
-                args.capture_count = count;
+        inline for (@typeInfo(CommandLineArgs).@"struct".fields) |field| {
+            if (std.mem.eql(u8, arg, flagName(field.name))) {
+                try parseField(init, &args, field.name, field.type, &it, &pending);
             }
         }
     }
     return args;
+}
+
+/// Converts a snake_case field name into its `--kebab-case` command-line flag.
+fn flagName(comptime field_name: []const u8) []const u8 {
+    const result = comptime blk: {
+        var value: [field_name.len + 2]u8 = undefined;
+        value[0] = '-';
+        value[1] = '-';
+        for (field_name, 0..) |char, index| {
+            value[index + 2] = if (char == '_') '-' else char;
+        }
+        break :blk value;
+    };
+    return &result;
+}
+
+/// Assigns one reflected command-line field according to its declared type.
+fn parseField(
+    init: std.process.Init,
+    args: *CommandLineArgs,
+    comptime field_name: []const u8,
+    comptime field_type: type,
+    it: *std.process.Args.Iterator,
+    pending: *?[]const u8,
+) !void {
+    if (field_type == bool) {
+        @field(args.*, field_name) = true;
+    } else if (field_type == ?[]const u8) {
+        if (optionValue(it, pending)) |value| {
+            @field(args.*, field_name) = try copyArg(init, value);
+        } else if (std.mem.eql(u8, field_name, "audio_test")) {
+            // --audio-test is valid without a channel and defaults to channel 0.
+            @field(args.*, field_name) = "";
+        } else {
+            return error.MissingArgument;
+        }
+    } else if (field_type == ?u16) {
+        const value = optionValue(it, pending) orelse return error.InvalidPort;
+        const port = std.fmt.parseInt(u16, value, 10) catch return error.InvalidPort;
+        if (port == 0) return error.InvalidPort;
+        @field(args.*, field_name) = port;
+    } else if (field_type == ?u32) {
+        const value = optionValue(it, pending) orelse return error.InvalidCaptureCount;
+        const count = std.fmt.parseInt(u32, value, 10) catch return error.InvalidCaptureCount;
+        if (count == 0) return error.InvalidCaptureCount;
+        @field(args.*, field_name) = count;
+    } else {
+        @compileError("unsupported command-line field type");
+    }
 }
 
 /// Returns the next argument, including one deferred by optionValue().
@@ -215,8 +245,10 @@ fn audioTest(init: std.process.Init, args: CommandLineArgs) !void {
     }
 
     var channel: i32 = 0;
-    if (args.audio_test_channel) |v| {
-        if (std.fmt.parseInt(i32, v, 10)) |c| channel = c else |_| {}
+    if (args.audio_test) |v| {
+        if (v.len > 0) {
+            if (std.fmt.parseInt(i32, v, 10)) |c| channel = c else |_| {}
+        }
     }
     channel = std.math.clamp(channel, 0, 3);
 

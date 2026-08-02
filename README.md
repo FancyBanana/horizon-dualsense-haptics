@@ -121,6 +121,8 @@ The available options are:
 --bluetooth                 Force simple rumble mode and disable USB audio
 --audio-sink <substring>    Select the matching SDL audio device
 --audio-gain <0..1>         Set audio output gain
+--ip-address <address>      IP address to receive telemetry (default 127.0.0.1)
+--port <port>               UDP port to receive telemetry (default 8800)
 --save-packets              Save received packets under data/
 --capture-count <n>         Save up to n packets (implies --save-packets)
 --selftest                  Parse a bundled packet and print its fields
@@ -135,6 +137,9 @@ Examples:
 ```sh
 # Use classic rumble without a configuration file.
 zig build run -- --motor-mode simple
+
+# Listen on all local interfaces and UDP port 8810.
+zig build run -- --ip-address 0.0.0.0 --port 8810
 
 # Capture exactly the first 100 telemetry packets while running.
 zig build run -- --capture-count 100

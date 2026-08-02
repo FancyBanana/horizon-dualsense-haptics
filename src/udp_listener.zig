@@ -15,19 +15,27 @@ pub const Handler = struct {
 
 /// Controls packet persistence for a listener session.
 pub const Options = struct {
+    /// Local IP address to bind.
+    ip_address: []const u8 = DEFAULT_IP_ADDRESS,
+    /// Local UDP port to bind.
+    port: u16 = DEFAULT_PORT,
     /// Whether valid packets should also be written under data/.
     save_packets: bool = false,
     /// Maximum number of packet files to write during this session.
     max_saved_packets: u32 = DEFAULT_MAX_SAVED_PACKETS,
 };
 
+/// Default local address for Forza telemetry.
+pub const DEFAULT_IP_ADDRESS = "127.0.0.1";
+/// Default UDP port for Forza telemetry.
+pub const DEFAULT_PORT: u16 = 8800;
 /// Default capture limit used by --save-packets without --capture-count.
 pub const DEFAULT_MAX_SAVED_PACKETS: u32 = 1000;
 
 /// Receives valid Forza telemetry datagrams and dispatches them to a handler.
 pub fn listen(init: std.process.Init, handler: Handler, options: Options) !void {
     const io = init.io;
-    const addr = try net.IpAddress.parse("127.0.0.1", 8800);
+    const addr = try net.IpAddress.parse(options.ip_address, options.port);
 
     const sock = try addr.bind(io, .{ .mode = .dgram, .protocol = .udp });
     defer sock.close(io);
