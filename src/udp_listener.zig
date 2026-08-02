@@ -13,9 +13,10 @@ pub const Handler = struct {
 
 pub const Options = struct {
     save_packets: bool = false,
+    max_saved_packets: u32 = DEFAULT_MAX_SAVED_PACKETS,
 };
 
-const MAX_SAVED_PACKETS: u32 = 1000;
+pub const DEFAULT_MAX_SAVED_PACKETS: u32 = 1000;
 
 pub fn listen(init: std.process.Init, handler: Handler, options: Options) !void {
     const io = init.io;
@@ -41,7 +42,7 @@ pub fn listen(init: std.process.Init, handler: Handler, options: Options) !void 
         }
         packet_counter += 1;
         try handler.process(handler.context, io, msg.data);
-        if (options.save_packets and packet_counter <= MAX_SAVED_PACKETS) {
+        if (options.save_packets and packet_counter <= options.max_saved_packets) {
             const path = try std.fmt.allocPrint(arena, "data/packet-{d}.udp", .{packet_counter});
             const file = try std.Io.Dir.cwd().createFile(io, path, .{});
             defer file.close(io);

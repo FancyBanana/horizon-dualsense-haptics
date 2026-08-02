@@ -73,6 +73,7 @@ The available options are:
 --audio-sink <substring>    Select the matching SDL audio device
 --audio-gain <0..1>         Set audio output gain
 --save-packets              Save received packets under data/
+--capture-count <n>         Save up to n packets (implies --save-packets)
 --selftest                  Parse a bundled packet and print its fields
 --replay                    Replay bundled data/packet-*.udp captures
 --loop                      Repeat replay mode indefinitely
@@ -85,6 +86,9 @@ Examples:
 ```sh
 # Use classic rumble without a configuration file.
 zig build run -- --motor-mode simple
+
+# Capture exactly the first 100 telemetry packets while running.
+zig build run -- --capture-count 100
 
 # Use a Bluetooth controller; this automatically disables audio mode.
 zig build run -- --bluetooth

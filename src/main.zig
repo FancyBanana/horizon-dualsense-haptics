@@ -21,25 +21,44 @@ const App = struct {
     cfg: config.Config = .{},
 };
 
+const CommandLineArgs = struct {
+    selftest: bool = false,
+    replay: bool = false,
+    audio_test: bool = false,
+    audio_test_channel: ?[]const u8 = null,
+    loop: bool = false,
+    motor_mode: ?[]const u8 = null,
+    bluetooth: bool = false,
+    audio_sink: ?[]const u8 = null,
+    audio_gain: ?[]const u8 = null,
+    speed: ?[]const u8 = null,
+    save_packets: bool = false,
+    capture_count: ?u32 = null,
+};
+
 pub fn main(init: std.process.Init) !void {
-    if (hasArg(init, "--selftest")) {
+    const args = try parseCommandLine(init);
+    if (args.selftest) {
         return selftest(init);
     }
-    if (hasArg(init, "--replay")) {
-        return replay(init);
+    if (args.replay) {
+        return replay(init, args);
     }
-    if (hasArg(init, "--audio-test")) {
-        return audioTest(init);
+    if (args.audio_test) {
+        return audioTest(init, args);
     }
 
     var app: App = .{};
-    try setupApp(init, &app);
+    try setupApp(init, &app, args);
     defer app.audio.stop();
     defer app.hap.shutdown();
     try listener.listen(init, .{
         .context = &app.hap,
         .process = processFrame,
-    }, .{ .save_packets = hasArg(init, "--save-packets") });
+    }, .{
+        .save_packets = args.save_packets or args.capture_count != null,
+        .max_saved_packets = args.capture_count orelse listener.DEFAULT_MAX_SAVED_PACKETS,
+    });
 }
 
 fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
@@ -52,9 +71,9 @@ fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
 
 /// Loads configuration, applies command-line overrides, and starts the audio
 /// backend when audio motor mode is selected.
-fn setupApp(init: std.process.Init, app: *App) !void {
+fn setupApp(init: std.process.Init, app: *App, args: CommandLineArgs) !void {
     app.cfg = config.Config.load(init.io, init.arena.allocator(), config.DEFAULT_CONFIG_PATH);
-    try applyCommandLineOverrides(init, &app.cfg);
+    try applyCommandLineOverrides(args, &app.cfg);
 
     app.hap.motor_mode = app.cfg.mode;
     if (app.cfg.mode == .audio) {
@@ -67,24 +86,85 @@ fn setupApp(init: std.process.Init, app: *App) !void {
     }
 }
 
-fn applyCommandLineOverrides(init: std.process.Init, cfg: *config.Config) !void {
-    if (argValue(init, "--motor-mode")) |v| {
+fn applyCommandLineOverrides(args: CommandLineArgs, cfg: *config.Config) !void {
+    if (args.motor_mode) |v| {
         cfg.mode = config.MotorMode.parse(v) orelse {
             print("invalid --motor-mode '{s}' (expected simple|audio)\n", .{v});
             return error.InvalidMotorMode;
         };
     }
-    if (hasArg(init, "--bluetooth")) {
+    if (args.bluetooth) {
         // Bluetooth exposes rumble and trigger HID reports, but not the USB
         // audio stream used by the native audio-haptics backend.
         cfg.mode = .simple;
     }
-    if (argValue(init, "--audio-sink")) |v| cfg.audio_sink = v;
-    if (argValue(init, "--audio-gain")) |v| {
+    if (args.audio_sink) |v| cfg.audio_sink = v;
+    if (args.audio_gain) |v| {
         const gain = try std.fmt.parseFloat(f32, v);
         if (!std.math.isFinite(gain)) return error.InvalidAudioGain;
         cfg.audio_gain = std.math.clamp(gain, 0, 1);
     }
+}
+
+fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
+    var args = CommandLineArgs{};
+    var it = std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa) catch return error.OutOfMemory;
+    defer it.deinit();
+
+    _ = it.next(); // argv[0]
+    var pending: ?[]const u8 = null;
+    while (nextArgument(&it, &pending)) |arg| {
+        if (std.mem.eql(u8, arg, "--selftest")) {
+            args.selftest = true;
+        } else if (std.mem.eql(u8, arg, "--replay")) {
+            args.replay = true;
+        } else if (std.mem.eql(u8, arg, "--audio-test")) {
+            args.audio_test = true;
+            if (optionValue(&it, &pending)) |value| args.audio_test_channel = try copyArg(init, value);
+        } else if (std.mem.eql(u8, arg, "--loop")) {
+            args.loop = true;
+        } else if (std.mem.eql(u8, arg, "--bluetooth")) {
+            args.bluetooth = true;
+        } else if (std.mem.eql(u8, arg, "--save-packets")) {
+            args.save_packets = true;
+        } else if (std.mem.eql(u8, arg, "--motor-mode")) {
+            if (optionValue(&it, &pending)) |value| args.motor_mode = try copyArg(init, value);
+        } else if (std.mem.eql(u8, arg, "--audio-sink")) {
+            if (optionValue(&it, &pending)) |value| args.audio_sink = try copyArg(init, value);
+        } else if (std.mem.eql(u8, arg, "--audio-gain")) {
+            if (optionValue(&it, &pending)) |value| args.audio_gain = try copyArg(init, value);
+        } else if (std.mem.eql(u8, arg, "--speed")) {
+            if (optionValue(&it, &pending)) |value| args.speed = try copyArg(init, value);
+        } else if (std.mem.eql(u8, arg, "--capture-count")) {
+            if (optionValue(&it, &pending)) |value| {
+                const count = std.fmt.parseInt(u32, value, 10) catch return error.InvalidCaptureCount;
+                if (count == 0) return error.InvalidCaptureCount;
+                args.capture_count = count;
+            }
+        }
+    }
+    return args;
+}
+
+fn nextArgument(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const u8 {
+    if (pending.*) |arg| {
+        pending.* = null;
+        return arg;
+    }
+    return it.next();
+}
+
+fn optionValue(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const u8 {
+    const value = nextArgument(it, pending) orelse return null;
+    if (std.mem.startsWith(u8, value, "--")) {
+        pending.* = value;
+        return null;
+    }
+    return value;
+}
+
+fn copyArg(init: std.process.Init, value: []const u8) ![]const u8 {
+    return init.arena.allocator().dupe(u8, value);
 }
 
 /// Parses a captured packet and prints it. Regression check for the parser.
@@ -104,9 +184,9 @@ fn selftest(init: std.process.Init) !void {
 
 /// Emits a fixed test tone on one audio channel so each actuator can be
 /// identified by ear (FL=0, FR=1, RL=2/speaker, RR=3). `--audio-test [0..3]`.
-fn audioTest(init: std.process.Init) !void {
+fn audioTest(init: std.process.Init, args: CommandLineArgs) !void {
     var app: App = .{};
-    try setupApp(init, &app);
+    try setupApp(init, &app, args);
     defer app.audio.stop();
     if (app.cfg.mode != .audio) {
         print("audio backend unavailable; cannot run the audio test\n", .{});
@@ -114,7 +194,7 @@ fn audioTest(init: std.process.Init) !void {
     }
 
     var channel: i32 = 0;
-    if (argValue(init, "--audio-test")) |v| {
+    if (args.audio_test_channel) |v| {
         if (std.fmt.parseInt(i32, v, 10)) |c| channel = c else |_| {}
     }
     channel = std.math.clamp(channel, 0, 3);
@@ -127,17 +207,17 @@ fn audioTest(init: std.process.Init) !void {
 /// Replays the captured data/packet-*.udp frames through the DualSense, paced
 /// by each packet's own TimestampMS (≈100 Hz). Add --loop to repeat forever;
 /// --speed <factor> scales the playback rate (1.0 = original cadence).
-fn replay(init: std.process.Init) !void {
+fn replay(init: std.process.Init, args: CommandLineArgs) !void {
     const io = init.io;
     var app: App = .{};
-    try setupApp(init, &app);
+    try setupApp(init, &app, args);
     defer app.audio.stop();
     defer app.hap.shutdown();
     const hap = &app.hap;
 
-    const loop_forever = hasArg(init, "--loop");
+    const loop_forever = args.loop;
     var speed: f32 = 1.0;
-    if (argValue(init, "--speed")) |v| {
+    if (args.speed) |v| {
         speed = try std.fmt.parseFloat(f32, v);
         if (!std.math.isFinite(speed) or speed <= 0) return error.InvalidSpeed;
     }
@@ -181,27 +261,4 @@ fn replay(init: std.process.Init) !void {
         print("replayed {d} frames\n", .{count});
         if (!loop_forever) break;
     }
-}
-
-fn hasArg(init: std.process.Init, needle: []const u8) bool {
-    var it = std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa) catch return false;
-    defer it.deinit();
-    _ = it.next(); // argv[0]
-    while (it.next()) |arg| {
-        if (std.mem.eql(u8, arg, needle)) return true;
-    }
-    return false;
-}
-
-fn argValue(init: std.process.Init, needle: []const u8) ?[]const u8 {
-    var it = std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa) catch return null;
-    defer it.deinit();
-    _ = it.next(); // argv[0]
-    while (it.next()) |arg| {
-        if (std.mem.eql(u8, arg, needle)) {
-            const value = it.next() orelse return null;
-            return init.arena.allocator().dupe(u8, value) catch return null;
-        }
-    }
-    return null;
 }
