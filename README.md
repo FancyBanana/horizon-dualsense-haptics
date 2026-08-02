@@ -13,8 +13,8 @@ The project supports two motor backends:
 - `audio`: synthesized 4-channel audio sent to the DualSense USB audio device;
   the rear channels drive the left and right haptic actuators.
 
-The Linux implementation uses `/dev/hidraw` for controller reports and SDL3
-for audio. The Windows HID layer is currently a stub.
+The device layer uses SDL3 HIDAPI for controller reports on Linux and Windows,
+while SDL3 provides the audio backend.
 
 ## Architecture
 
@@ -32,8 +32,7 @@ flowchart LR
 
     Mapping --> Report["dualsense.zig<br/>OutputReport"]
     Report --> Selector["device.zig<br/>platform selector"]
-    Selector --> Linux["device_linux.zig<br/>/dev/hidraw"]
-    Selector --> Windows["device_windows.zig<br/>stub"]
+    Selector --> Device["device_sdl.zig<br/>SDL3 HIDAPI"]
 
     Mapping --> Audio["audio.zig<br/>SDL3 renderer"]
     Audio --> AudioDevice["audio_device.zig<br/>SDL device matching"]
@@ -72,7 +71,7 @@ device. The `--bluetooth` option selects simple mode instead.
 - A DualSense or DualSense Edge controller connected over USB or Bluetooth
 - For audio mode, a USB connection to the controller and an SDL3-visible audio
   device
-- For Linux, permission to open the controller's `/dev/hidraw` device
+- For Linux, permission for SDL HIDAPI to access the controller
 
 The SDL3 dependency is fetched automatically by Zig from `build.zig.zon`.
 

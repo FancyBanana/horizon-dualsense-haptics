@@ -68,16 +68,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_dualsense_tests.step);
     test_step.dependOn(&run_parser_tests.step);
 
-    if (target.result.os.tag == .linux) {
-        const run_device_tests = b.addRunArtifact(b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/device_linux.zig"),
-                .target = target,
-                .optimize = optimize,
-            }),
-        }));
-        test_step.dependOn(&run_device_tests.step);
-    }
+    const device_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/device_sdl.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wireSdl(device_test_mod, sdl);
+    const run_device_tests = b.addRunArtifact(b.addTest(.{
+        .root_module = device_test_mod,
+    }));
+    test_step.dependOn(&run_device_tests.step);
 }
 
 /// Gives a module the SDL3 headers, libc linkage, and static SDL3 library.

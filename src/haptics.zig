@@ -62,7 +62,7 @@ pub const Haptics = struct {
     waiting_hinted: bool = false,
 
     /// How the main motors are driven. `audio` publishes intensities to the
-    /// SDL3-backed AudioHaptics stream (motors in the hidraw report stay 0);
+    /// SDL3-backed AudioHaptics stream (motors in the HID report stay 0);
     /// `simple` encodes them as classic rumble bytes in the report.
     motor_mode: config.MotorMode = .simple,
     audio: ?*audio.AudioHaptics = null,
@@ -149,7 +149,7 @@ pub const Haptics = struct {
     }
 
     /// Publishes side-specific road, slip, rumble-strip, and wheel-speed cues
-    /// to the audio backend, if enabled. Called even when the hidraw device is
+    /// to the audio backend, if enabled. Called even when the HID device is
     /// disconnected so audio haptics keep working while telemetry is active.
     fn updateAudio(self: *Haptics, frame: *const parser.HorizonFrame) void {
         if (self.motor_mode != .audio) return;

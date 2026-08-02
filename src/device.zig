@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Portable DualSense hidraw access. The concrete implementation is selected
-//! at compile time, so a future Windows port only needs a new device_*.zig
-//! implementation and a branch below; nothing else in the app changes.
+//! Portable DualSense HID access through SDL3 HIDAPI.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const ds = @import("dualsense.zig");
 
-/// Errors returned by the selected platform HID backend.
+/// Errors returned by the shared SDL HID backend.
 pub const Error = ds.Error;
 
-const impl = switch (builtin.os.tag) {
-    .linux => @import("device_linux.zig"),
-    .windows => @import("device_windows.zig"),
-    else => @compileError("unsupported OS for the DualSense device layer"),
-};
+const impl = @import("device_sdl.zig");
 
 pub const Device = impl.Device;
 
