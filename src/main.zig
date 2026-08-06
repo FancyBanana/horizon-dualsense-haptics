@@ -7,6 +7,7 @@ const parser = @import("packet_parser.zig");
 const haptics = @import("haptics.zig");
 const audio = @import("audio.zig");
 const config = @import("config.zig");
+const appargs = @import("arguments.zig");
 
 const print = std.debug.print;
 
@@ -22,53 +23,15 @@ const App = struct {
     cfg: config.Config = .{},
 };
 
-/// Parsed command-line flags and values shared by all runtime modes.
-const CommandLineArgs = struct {
-    /// Print help and exit.
-    help: bool = false,
-    /// Print a bundled packet and exit.
-    selftest: bool = false,
-    /// Replay captured packets through the controller.
-    replay: bool = false,
-    /// Optional channel number for an audio test tone; null disables the test.
-    audio_test: ?[]const u8 = null,
-    /// Repeat replay mode indefinitely.
-    loop: bool = false,
-    /// Requested `simple` or `audio` motor mode.
-    motor_mode: ?[]const u8 = null,
-    /// Force simple rumble mode for a Bluetooth controller.
-    bluetooth: bool = false,
-    /// Substring used to select the SDL audio device.
-    audio_sink: ?[]const u8 = null,
-    /// Audio output gain before rendering.
-    audio_gain: ?[]const u8 = null,
-    /// Replay speed multiplier.
-    speed: ?[]const u8 = null,
-    /// Save received telemetry packets using the default limit.
-    save_packets: bool = false,
-    /// Maximum number of packets to save.
-    capture_count: ?u32 = null,
-    /// Enable the RPM-driven RGB lightbar.
-    lightbar: bool = false,
-    /// Enable the gear-indicator player LEDs.
-    leds: bool = false,
-    /// Record packets without initializing audio or HID backends.
-    record_only: bool = false,
-    /// IP address on which to receive telemetry.
-    ip_address: ?[]const u8 = null,
-    /// UDP port on which to receive telemetry.
-    port: ?u16 = null,
-};
-
 /// Runs the selected runtime mode.
 pub fn main(init: std.process.Init) !void {
-    const args = try parseCommandLine(init);
-    if (args.help) {
-        printHelp();
+    const args = appargs.parseCommandLine(init) catch |err| {
+        std.debug.print("Argument error: {s}", .{@errorName(err)});
         return;
-    }
-    if (args.selftest) {
-        return selftest(init);
+    };
+    if (args.help) {
+        appargs.printHelp();
+        return;
     }
     if (args.replay) {
         return replay(init, args);
@@ -92,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Builds listener settings from the parsed command-line arguments.
-fn listenerOptions(args: CommandLineArgs) listener.Options {
+fn listenerOptions(args: appargs.CommandLineArgs) listener.Options {
     return .{
         .ip_address = args.ip_address orelse listener.DEFAULT_IP_ADDRESS,
         .port = args.port orelse listener.DEFAULT_PORT,
@@ -128,7 +91,7 @@ fn processFrame(ctx: *anyopaque, io: Io, data: []const u8) anyerror!void {
 
 /// Loads configuration, applies command-line overrides, and starts the audio
 /// backend when audio motor mode is selected.
-fn setupApp(init: std.process.Init, app: *App, args: CommandLineArgs) !void {
+fn setupApp(init: std.process.Init, app: *App, args: appargs.CommandLineArgs) !void {
     app.cfg = config.Config.load(init.io, init.arena.allocator(), config.DEFAULT_CONFIG_PATH);
     try applyCommandLineOverrides(args, &app.cfg);
 
@@ -146,7 +109,7 @@ fn setupApp(init: std.process.Init, app: *App, args: CommandLineArgs) !void {
 }
 
 /// Applies command-line configuration values over the loaded config file.
-fn applyCommandLineOverrides(args: CommandLineArgs, cfg: *config.Config) !void {
+fn applyCommandLineOverrides(args: appargs.CommandLineArgs, cfg: *config.Config) !void {
     if (args.motor_mode) |v| {
         cfg.mode = config.MotorMode.parse(v) orelse {
             print("invalid --motor-mode '{s}' (expected simple|audio)\n", .{v});
@@ -166,153 +129,9 @@ fn applyCommandLineOverrides(args: CommandLineArgs, cfg: *config.Config) !void {
     }
 }
 
-/// Parses argv once and returns values shared by all application modes.
-fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
-    var args = CommandLineArgs{};
-    var it = std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa) catch return error.OutOfMemory;
-    defer it.deinit();
-
-    _ = it.next(); // argv[0]
-    var pending: ?[]const u8 = null;
-    while (nextArgument(&it, &pending)) |arg| {
-        if (std.mem.eql(u8, arg, "-h")) {
-            args.help = true;
-            continue;
-        }
-        var matched = false;
-        inline for (@typeInfo(CommandLineArgs).@"struct".fields) |field| {
-            if (std.mem.eql(u8, arg, flagName(field.name))) {
-                try parseField(init, &args, field.name, field.type, &it, &pending);
-                matched = true;
-            }
-        }
-        if (!matched and !args.help) {
-            print("unknown option '{s}' (use --help for usage)\n", .{arg});
-            return error.UnknownOption;
-        }
-    }
-    return args;
-}
-
-/// Prints usage information for all command-line options.
-fn printHelp() void {
-    const usage =
-        \\Usage: horizon-dualsense-haptics [options]
-        \\
-        \\Options:
-        \\  --help                     Show this help and exit
-        \\  --motor-mode simple|audio  Select the haptic backend
-        \\  --bluetooth                 Force simple rumble mode and disable USB audio
-        \\  --audio-sink <substring>    Select the matching SDL audio device
-        \\  --audio-gain <0..1>         Set audio output gain
-        \\  --ip-address <address>      IP address to receive telemetry (default 127.0.0.1)
-        \\  --port <port>               UDP port to receive telemetry (default 8800)
-        \\  --save-packets              Save received packets under fh5_packets/
-        \\  --capture-count <n>         Save up to n packets (implies --save-packets)
-        \\  --record-only               Record packets without initializing audio or HID
-        \\  --selftest                  Parse a bundled packet and print its fields
-        \\  --replay                    Replay bundled fh5_packets/packet-*.hor5tel captures
-        \\  --loop                      Repeat replay mode indefinitely
-        \\  --speed <factor>            Scale replay speed; 1.0 is the captured rate
-        \\  --audio-test [0..3]         Emit a test tone on one audio channel
-        \\  --lightbar                  Enable the RPM-driven RGB lightbar
-        \\  --leds                      Enable the gear-indicator player LEDs
-        \\
-    ;
-    print("{s}", .{usage});
-}
-
-/// Converts a snake_case field name into its `--kebab-case` command-line flag.
-fn flagName(comptime field_name: []const u8) []const u8 {
-    const result = comptime blk: {
-        var value: [field_name.len + 2]u8 = undefined;
-        value[0] = '-';
-        value[1] = '-';
-        for (field_name, 0..) |char, index| {
-            value[index + 2] = if (char == '_') '-' else char;
-        }
-        break :blk value;
-    };
-    return &result;
-}
-
-/// Assigns one reflected command-line field according to its declared type.
-fn parseField(
-    init: std.process.Init,
-    args: *CommandLineArgs,
-    comptime field_name: []const u8,
-    comptime field_type: type,
-    it: *std.process.Args.Iterator,
-    pending: *?[]const u8,
-) !void {
-    if (field_type == bool) {
-        @field(args.*, field_name) = true;
-    } else if (field_type == ?[]const u8) {
-        if (optionValue(it, pending)) |value| {
-            @field(args.*, field_name) = try copyArg(init, value);
-        } else if (std.mem.eql(u8, field_name, "audio_test")) {
-            // --audio-test is valid without a channel and defaults to channel 0.
-            @field(args.*, field_name) = "";
-        } else {
-            return error.MissingArgument;
-        }
-    } else if (field_type == ?u16) {
-        const value = optionValue(it, pending) orelse return error.InvalidPort;
-        const port = std.fmt.parseInt(u16, value, 10) catch return error.InvalidPort;
-        if (port == 0) return error.InvalidPort;
-        @field(args.*, field_name) = port;
-    } else if (field_type == ?u32) {
-        const value = optionValue(it, pending) orelse return error.InvalidCaptureCount;
-        const count = std.fmt.parseInt(u32, value, 10) catch return error.InvalidCaptureCount;
-        if (count == 0) return error.InvalidCaptureCount;
-        @field(args.*, field_name) = count;
-    } else {
-        @compileError("unsupported command-line field type");
-    }
-}
-
-/// Returns the next argument, including one deferred by optionValue().
-fn nextArgument(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const u8 {
-    if (pending.*) |arg| {
-        pending.* = null;
-        return arg;
-    }
-    return it.next();
-}
-
-/// Reads an option value without consuming the next option as its value.
-fn optionValue(it: *std.process.Args.Iterator, pending: *?[]const u8) ?[]const u8 {
-    const value = nextArgument(it, pending) orelse return null;
-    if (std.mem.startsWith(u8, value, "--")) {
-        pending.* = value;
-        return null;
-    }
-    return value;
-}
-
-/// Copies an argument into the process arena for use after iterator cleanup.
-fn copyArg(init: std.process.Init, value: []const u8) ![]const u8 {
-    return init.arena.allocator().dupe(u8, value);
-}
-
-/// Parses a captured packet and prints it. Regression check for the parser.
-fn selftest(init: std.process.Init) !void {
-    const io = init.io;
-
-    const file = try std.Io.Dir.cwd().openFile(io, "fh5_packets/packet-300.hor5tel", .{ .mode = .read_only });
-    defer file.close(io);
-
-    var packet: [parser.PACKET_SIZE]u8 = undefined;
-    const n = try file.readStreaming(io, &.{packet[0..]});
-    if (n != parser.PACKET_SIZE) return error.UnexpectedEndOfStream;
-    const data = parser.parseHorizonPacket(packet);
-
-    std.debug.print("Packet data:\n{any}", .{data});
-}
-
 /// Emits a fixed test tone on one audio channel so each actuator can be
 /// identified by ear (FL=0, FR=1, RL=2/speaker, RR=3). `--audio-test [0..3]`.
-fn audioTest(init: std.process.Init, args: CommandLineArgs) !void {
+fn audioTest(init: std.process.Init, args: appargs.CommandLineArgs) !void {
     var app: App = .{};
     try setupApp(init, &app, args);
     defer app.audio.stop();
@@ -337,7 +156,7 @@ fn audioTest(init: std.process.Init, args: CommandLineArgs) !void {
 /// Replays the captured fh5_packets/packet-*.hor5tel frames through the DualSense, paced
 /// by each packet's own TimestampMS (≈100 Hz). Add --loop to repeat forever;
 /// --speed <factor> scales the playback rate (1.0 = original cadence).
-fn replay(init: std.process.Init, args: CommandLineArgs) !void {
+fn replay(init: std.process.Init, args: appargs.CommandLineArgs) !void {
     const io = init.io;
     var app: App = .{};
     try setupApp(init, &app, args);

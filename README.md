@@ -141,7 +141,6 @@ The available options are:
 --save-packets              Save received packets under fh5_packets/
 --capture-count <n>         Save up to n packets (implies --save-packets)
 --record-only               Record packets without initializing audio or HID
---selftest                  Parse a bundled packet and print its fields
 --replay                    Replay bundled fh5_packets/packet-*.hor5tel captures
 --loop                      Repeat replay mode indefinitely
 --speed <factor>            Scale replay speed; 1.0 is the captured rate
