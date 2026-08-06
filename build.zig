@@ -24,11 +24,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
-        // This is a temporary fix for the .sframe relocation bug
-        .use_llvm = true,
-        .use_lld = true,
     });
     wireSdl(exe.root_module, sdl);
+    applySframeWorkaround(exe); // .sframe relocation bug
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
@@ -39,48 +37,44 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Each source file with tests gets its own root so Zig executes those tests.
-    const haptics_test_mod = b.createModule(.{
+    // Tests are grouped by whether they need SDL, so the SDL3 static library
+    // is only linked into the roots that @cImport its headers. haptics.zig
+    // transitively imports device.zig -> device_sdl.zig, so a single root
+    // exercises both their test blocks.
+    const test_step = b.step("test", "Run tests");
+
+    const sdl_test_mod = b.createModule(.{
         .root_source_file = b.path("src/haptics.zig"),
         .target = target,
         .optimize = optimize,
     });
-    wireSdl(haptics_test_mod, sdl);
-    const run_haptics_tests = b.addRunArtifact(b.addTest(.{
-        .root_module = haptics_test_mod,
-    }));
+    wireSdl(sdl_test_mod, sdl);
+    const sdl_test = b.addTest(.{
+        .root_module = sdl_test_mod,
+    });
+    applySframeWorkaround(sdl_test); // .sframe relocation bug
+    const run_sdl_tests = b.addRunArtifact(sdl_test);
+    test_step.dependOn(&run_sdl_tests.step);
 
-    const run_dualsense_tests = b.addRunArtifact(b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/dualsense.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    }));
-
-    const run_parser_tests = b.addRunArtifact(b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/packet_parser.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    }));
-
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_haptics_tests.step);
-    test_step.dependOn(&run_dualsense_tests.step);
-    test_step.dependOn(&run_parser_tests.step);
-
-    const device_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/device_sdl.zig"),
+    const dualsense_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/dualsense.zig"),
         .target = target,
         .optimize = optimize,
     });
-    wireSdl(device_test_mod, sdl);
-    const run_device_tests = b.addRunArtifact(b.addTest(.{
-        .root_module = device_test_mod,
+    const run_dualsense_tests = b.addRunArtifact(b.addTest(.{
+        .root_module = dualsense_test_mod,
     }));
-    test_step.dependOn(&run_device_tests.step);
+    test_step.dependOn(&run_dualsense_tests.step);
+
+    const parser_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/packet_parser.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_parser_tests = b.addRunArtifact(b.addTest(.{
+        .root_module = parser_test_mod,
+    }));
+    test_step.dependOn(&run_parser_tests.step);
 }
 
 /// Gives a module the SDL3 headers, libc linkage, and static SDL3 library.
@@ -88,4 +82,12 @@ fn wireSdl(m: *std.Build.Module, sdl: *std.Build.Dependency) void {
     m.link_libc = true;
     m.addIncludePath(sdl.path("include"));
     m.linkLibrary(sdl.artifact("SDL3"));
+}
+
+/// Temporary fix for the .sframe relocation bug: force the LLVM + LLD
+/// backends, which handle the R_X86_64_PC64 relocations in the system crt1.o
+/// that the self-hosted linker rejects.
+fn applySframeWorkaround(c: *std.Build.Step.Compile) void {
+    c.use_llvm = true;
+    c.use_lld = true;
 }
