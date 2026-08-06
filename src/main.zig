@@ -153,7 +153,7 @@ fn audioTest(init: std.process.Init, args: appargs.CommandLineArgs) !void {
     while (true) try std.Io.sleep(init.io, .{ .nanoseconds = std.time.ns_per_s }, .boot);
 }
 
-/// Replays the captured fh5_packets/packet-*.hor5tel frames through the DualSense, paced
+/// Replays the captured fh5_packets/packet-*.fh5tel frames through the DualSense, paced
 /// by each packet's own TimestampMS (≈100 Hz). Add --loop to repeat forever;
 /// --speed <factor> scales the playback rate (1.0 = original cadence).
 fn replay(init: std.process.Init, args: appargs.CommandLineArgs) !void {
@@ -178,7 +178,7 @@ fn replay(init: std.process.Init, args: appargs.CommandLineArgs) !void {
         var count: usize = 0;
         while (true) : (index += 1) {
             var path_buf: [64]u8 = undefined;
-            const path = std.fmt.bufPrint(&path_buf, "fh5_packets/packet-{d}.hor5tel", .{index}) catch unreachable;
+            const path = std.fmt.bufPrint(&path_buf, "fh5_packets/packet-{d}.fh5tel", .{index}) catch unreachable;
             const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only }) catch break;
             defer file.close(io);
 

@@ -444,7 +444,7 @@ test "replay all captured packets through the mapping" {
     var index: usize = 1;
     while (true) : (index += 1) {
         var path_buf: [64]u8 = undefined;
-        const path = try std.fmt.bufPrint(&path_buf, "fh5_packets/packet-{d}.hor5tel", .{index});
+        const path = try std.fmt.bufPrint(&path_buf, "fh5_packets/packet-{d}.fh5tel", .{index});
         const file = std.Io.Dir.cwd().openFile(std.testing.io, path, .{ .mode = .read_only }) catch break;
         defer file.close(std.testing.io);
 

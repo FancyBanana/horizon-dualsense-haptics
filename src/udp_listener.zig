@@ -58,7 +58,7 @@ pub fn listen(init: std.process.Init, handler: Handler, options: Options) !void 
         packet_counter += 1;
         try handler.process(handler.context, io, msg.data);
         if (options.save_packets and packet_counter <= options.max_saved_packets) {
-            const path = try std.fmt.allocPrint(arena, "fh5_packets/packet-{d}.hor5tel", .{packet_counter});
+            const path = try std.fmt.allocPrint(arena, "fh5_packets/packet-{d}.fh5tel", .{packet_counter});
             const file = try std.Io.Dir.cwd().createFile(io, path, .{});
             defer file.close(io);
             try file.writeStreamingAll(io, msg.data);
