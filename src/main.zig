@@ -132,15 +132,15 @@ fn setupApp(init: std.process.Init, app: *App, args: CommandLineArgs) !void {
     app.cfg = config.Config.load(init.io, init.arena.allocator(), config.DEFAULT_CONFIG_PATH);
     try applyCommandLineOverrides(args, &app.cfg);
 
-    app.hap.motor_mode = app.cfg.mode;
-    app.hap.lightbar_enabled = args.lightbar;
-    app.hap.leds_enabled = args.leds;
+    app.hap.config.motor_mode = app.cfg.mode;
+    app.hap.config.lightbar_enabled = args.lightbar;
+    app.hap.config.leds_enabled = args.leds;
     if (app.cfg.mode == .audio) {
         app.audio = .{ .sink_name = app.cfg.audio_sink, .gain = app.cfg.audio_gain };
         app.hap.audio = &app.audio;
         if (!app.audio.start(init.io)) {
             print("audio: no DualSense USB sink, falling back to simple rumble\n", .{});
-            app.hap.motor_mode = .simple;
+            app.hap.config.motor_mode = .simple;
         }
     }
 }
@@ -207,11 +207,11 @@ fn printHelp() void {
         \\  --audio-gain <0..1>         Set audio output gain
         \\  --ip-address <address>      IP address to receive telemetry (default 127.0.0.1)
         \\  --port <port>               UDP port to receive telemetry (default 8800)
-        \\  --save-packets              Save received packets under data/
+        \\  --save-packets              Save received packets under fh5_packets/
         \\  --capture-count <n>         Save up to n packets (implies --save-packets)
         \\  --record-only               Record packets without initializing audio or HID
         \\  --selftest                  Parse a bundled packet and print its fields
-        \\  --replay                    Replay bundled data/packet-*.udp captures
+        \\  --replay                    Replay bundled fh5_packets/packet-*.hor5tel captures
         \\  --loop                      Repeat replay mode indefinitely
         \\  --speed <factor>            Scale replay speed; 1.0 is the captured rate
         \\  --audio-test [0..3]         Emit a test tone on one audio channel
@@ -299,7 +299,7 @@ fn copyArg(init: std.process.Init, value: []const u8) ![]const u8 {
 fn selftest(init: std.process.Init) !void {
     const io = init.io;
 
-    const file = try std.Io.Dir.cwd().openFile(io, "data/packet-300.udp", .{ .mode = .read_only });
+    const file = try std.Io.Dir.cwd().openFile(io, "fh5_packets/packet-300.hor5tel", .{ .mode = .read_only });
     defer file.close(io);
 
     var packet: [parser.PACKET_SIZE]u8 = undefined;
@@ -334,7 +334,7 @@ fn audioTest(init: std.process.Init, args: CommandLineArgs) !void {
     while (true) try std.Io.sleep(init.io, .{ .nanoseconds = std.time.ns_per_s }, .boot);
 }
 
-/// Replays the captured data/packet-*.udp frames through the DualSense, paced
+/// Replays the captured fh5_packets/packet-*.hor5tel frames through the DualSense, paced
 /// by each packet's own TimestampMS (≈100 Hz). Add --loop to repeat forever;
 /// --speed <factor> scales the playback rate (1.0 = original cadence).
 fn replay(init: std.process.Init, args: CommandLineArgs) !void {
@@ -359,7 +359,7 @@ fn replay(init: std.process.Init, args: CommandLineArgs) !void {
         var count: usize = 0;
         while (true) : (index += 1) {
             var path_buf: [64]u8 = undefined;
-            const path = std.fmt.bufPrint(&path_buf, "data/packet-{d}.udp", .{index}) catch unreachable;
+            const path = std.fmt.bufPrint(&path_buf, "fh5_packets/packet-{d}.hor5tel", .{index}) catch unreachable;
             const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only }) catch break;
             defer file.close(io);
 
@@ -384,7 +384,7 @@ fn replay(init: std.process.Init, args: CommandLineArgs) !void {
         }
 
         if (count == 0) {
-            print("no captured packets found in data/ (run `zig build run -- --save-packets`)\n", .{});
+            print("no captured packets found in fh5_packets/ (run `zig build run -- --save-packets`)\n", .{});
             return error.NoPackets;
         }
 

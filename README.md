@@ -138,11 +138,11 @@ The available options are:
 --audio-gain <0..1>         Set audio output gain
 --ip-address <address>      IP address to receive telemetry (default 127.0.0.1)
 --port <port>               UDP port to receive telemetry (default 8800)
---save-packets              Save received packets under data/
+--save-packets              Save received packets under fh5_packets/
 --capture-count <n>         Save up to n packets (implies --save-packets)
 --record-only               Record packets without initializing audio or HID
 --selftest                  Parse a bundled packet and print its fields
---replay                    Replay bundled data/packet-*.udp captures
+--replay                    Replay bundled fh5_packets/packet-*.hor5tel captures
 --loop                      Repeat replay mode indefinitely
 --speed <factor>            Scale replay speed; 1.0 is the captured rate
 --audio-test [0..3]         Emit a test tone on one audio channel

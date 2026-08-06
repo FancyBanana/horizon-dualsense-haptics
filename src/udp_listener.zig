@@ -19,7 +19,7 @@ pub const Options = struct {
     ip_address: []const u8 = DEFAULT_IP_ADDRESS,
     /// Local UDP port to bind.
     port: u16 = DEFAULT_PORT,
-    /// Whether valid packets should also be written under data/.
+    /// Whether valid packets should also be written under fh5_packets/.
     save_packets: bool = false,
     /// Maximum number of packet files to write during this session.
     max_saved_packets: u32 = DEFAULT_MAX_SAVED_PACKETS,
@@ -58,7 +58,7 @@ pub fn listen(init: std.process.Init, handler: Handler, options: Options) !void 
         packet_counter += 1;
         try handler.process(handler.context, io, msg.data);
         if (options.save_packets and packet_counter <= options.max_saved_packets) {
-            const path = try std.fmt.allocPrint(arena, "data/packet-{d}.udp", .{packet_counter});
+            const path = try std.fmt.allocPrint(arena, "fh5_packets/packet-{d}.hor5tel", .{packet_counter});
             const file = try std.Io.Dir.cwd().createFile(io, path, .{});
             defer file.close(io);
             try file.writeStreamingAll(io, msg.data);
