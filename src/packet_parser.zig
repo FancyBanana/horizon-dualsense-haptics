@@ -111,28 +111,19 @@ comptime {
 
 /// Parses data from a Forza Horizon 5 telemetry packet.
 /// Decodes one fixed-size little-endian Horizon telemetry packet.
+/// The struct is packed with no padding (verified by the comptime block
+/// above), so the frame is a plain little-endian byte image of the packet.
 pub fn parseHorizonPacket(data: [324]u8) HorizonFrame {
-    var frame = HorizonFrame{};
-    var offset: usize = 0;
+    var frame: HorizonFrame = undefined;
+    @memcpy(std.mem.asBytes(&frame), &data);
 
-    inline for (@typeInfo(HorizonFrame).@"struct".fields) |field| {
-        const end = offset + @sizeOf(field.type);
-        const bytes = data[offset..end];
-
-        @field(frame, field.name) = readLittleEndian(field.type, bytes);
-        offset = end;
+    if (builtin.cpu.arch.endian() == .big) {
+        inline for (@typeInfo(HorizonFrame).@"struct".fields) |field| {
+            @field(frame, field.name) = std.mem.littleToNative(field.type, @field(frame, field.name));
+        }
     }
 
     return frame;
-}
-
-/// Converts a byte slice to a value while honoring the host byte order.
-fn readLittleEndian(comptime T: type, bytes: []const u8) T {
-    const value = std.mem.bytesToValue(T, bytes);
-    if (builtin.cpu.arch.endian() == .little) return value;
-
-    const Bits = std.meta.Int(.unsigned, @bitSizeOf(T));
-    return @bitCast(@byteSwap(@as(Bits, @bitCast(value))));
 }
 
 test "parses little-endian telemetry fields" {
