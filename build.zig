@@ -24,6 +24,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        // This is a temporary fix for the .sframe relocation bug
+        .use_llvm = true,
+        .use_lld = true,
     });
     wireSdl(exe.root_module, sdl);
     b.installArtifact(exe);
