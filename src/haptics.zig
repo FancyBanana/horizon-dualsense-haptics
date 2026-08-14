@@ -11,11 +11,11 @@ const platform = @import("platform.zig");
 
 const print = std.debug.print;
 
-/// Tunables for the telemetry -> DualSense mapping.
+/// Telemetry -> DualSense mapping tunables.
 pub const Params = struct {
     // L2 (brake)
     brake_deadzone: u8 = 40,
-    brake_zone_max: u8 = 8, // top zone resistance level (1..8) at full brake
+    brake_zone_max: u8 = 8, // top zone resistance (1..8) at full brake
     handbrake_force: u8 = 220,
     abs_brake_threshold: u8 = 100,
     abs_slip_ratio_threshold: f32 = 0.3,
@@ -31,12 +31,12 @@ pub const Params = struct {
     wheelspin_freq_max: u8 = 160,
     wheelspin_amp: u8 = 180,
     wheelspin_slip_threshold: f32 = 1.0,
-    burnout_rot_threshold: f32 = 30.0, // rad/s, wheel spun up at standstill
+    burnout_rot_threshold: f32 = 30.0, // rad/s at standstill
     rev_limit_ratio: f32 = 0.96,
     rev_limit_freq: u8 = 110,
     rev_limit_amp: u8 = 150,
-    wheelspin_zone_start: u8 = 5, // zone where wheelspin vibration begins
-    rev_limit_zone_start: u8 = 8, // zone where rev-limit vibration begins
+    wheelspin_zone_start: u8 = 5,
+    rev_limit_zone_start: u8 = 8,
 
     // shared
     shift_burst_freq: u8 = 20,
@@ -45,23 +45,16 @@ pub const Params = struct {
     low_speed_mps: f32 = 5.0, // below this trust wheel rotation, not slip
 };
 
-/// Static configuration for the telemetry -> effects mapping. Holds every
-/// knob that can be tuned at startup; runtime state lives in `Haptics`.
+/// Static configuration; runtime state lives in `Haptics`.
 pub const HapticsConfig = struct {
-    /// Telemetry -> effects mapping tunables.
     params: Params = .{},
-    /// How the main motors are driven: `simple` rumble bytes in the HID
-    /// report, or `audio` intensities published to the audio backend.
     motor_mode: config.MotorMode = .simple,
-    /// Minimum delay between repeated DualSense discovery attempts.
     reconnect_interval_ms: i64 = 1_000,
-    /// Whether the RPM-driven RGB lightbar is enabled.
     lightbar_enabled: bool = false,
-    /// Whether the gear-indicator player LEDs are enabled.
     leds_enabled: bool = false,
 };
 
-/// Per-side audio intensity and frequency produced from telemetry.
+/// Per-side audio intensity and frequency.
 const AudioCue = struct {
     amp: f32 = 0,
     freq: f32 = 90,
@@ -70,7 +63,6 @@ const AudioCue = struct {
 /// Converts telemetry frames into DualSense HID and audio effects.
 pub const Haptics = struct {
     device: device.Device = .{},
-    /// Static configuration; runtime state lives in the other fields.
     config: HapticsConfig = .{},
     prev_gear: ?u8 = null,
     shift_until_ms: i64 = 0,
@@ -78,8 +70,7 @@ pub const Haptics = struct {
     waiting_hinted: bool = false,
     audio: ?*audio.AudioHaptics = null,
 
-    /// Parse is done by the caller; this maps a frame to the controller.
-    /// Errors are swallowed: the device is re-opened lazily on the next tick.
+    /// Maps a parsed frame to the controller; errors just defer a reconnect.
     pub fn update(self: *Haptics, io: Io, frame: *const parser.HorizonFrame) void {
         self.ensureConnected(io);
         self.updateAudio(frame);
@@ -96,8 +87,7 @@ pub const Haptics = struct {
         };
     }
 
-    /// Runs the telemetry -> effects mapping without touching any hardware.
-    /// This is what the offline replay test (`zig build test`) exercises.
+    /// Pure telemetry -> report mapping, no hardware; used by the tests.
     pub fn buildReport(self: *Haptics, io: Io, frame: *const parser.HorizonFrame) ds.OutputReport {
         if (frame.IsRaceOn == 0) return self.resetReport();
 
@@ -116,7 +106,7 @@ pub const Haptics = struct {
         return report;
     }
 
-    /// Builds a report that releases triggers, motors, and controller LEDs.
+    /// Report releasing triggers, motors, and LEDs.
     fn resetReport(self: *const Haptics) ds.OutputReport {
         var report: ds.OutputReport = .{};
         self.configureAudioReport(&report);
@@ -138,8 +128,7 @@ pub const Haptics = struct {
         return report;
     }
 
-    /// Releases the triggers and motors, then closes the device.
-    /// Safe to call when disconnected.
+    /// Releases effects and closes the device. Safe when disconnected.
     pub fn shutdown(self: *Haptics) void {
         if (self.audio) |a| {
             a.setActive(false);
@@ -151,7 +140,7 @@ pub const Haptics = struct {
         self.device.close();
     }
 
-    /// Maps engine RPM to a green-to-red lightbar and gear to player LEDs.
+    /// RPM -> green-to-red lightbar, gear -> player LEDs.
     fn updateLeds(self: *const Haptics, frame: *const parser.HorizonFrame, report: *ds.OutputReport) void {
         if (!self.config.lightbar_enabled and !self.config.leds_enabled) return;
 
@@ -174,7 +163,7 @@ pub const Haptics = struct {
         }
     }
 
-    /// Opens the controller when needed, throttling repeated discovery attempts.
+    /// Opens the controller lazily, throttling discovery attempts.
     fn ensureConnected(self: *Haptics, io: Io) void {
         if (!self.device.connected()) {
             const now = nowMillis(io);
@@ -192,12 +181,11 @@ pub const Haptics = struct {
         }
     }
 
-    /// Adds the report flags required to route haptics through USB audio.
+    /// Sets the flags that route haptics through USB audio.
     fn configureAudioReport(self: *const Haptics, report: *ds.OutputReport) void {
         if (self.config.motor_mode != .audio) return;
 
-        // These are the exact flag bits the kernel driver writes when it
-        // routes the internal speaker and voice-coil actuators to USB audio.
+        // Same flags the kernel driver uses for speaker + voice-coil routing.
         report.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
         report.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
         report.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
@@ -205,9 +193,7 @@ pub const Haptics = struct {
         report.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
     }
 
-    /// Publishes side-specific road, slip, rumble-strip, and wheel-speed cues
-    /// to the audio backend, if enabled. Called even when the HID device is
-    /// disconnected so audio haptics keep working while telemetry is active.
+    /// Publishes per-side audio cues; called even while HID is disconnected.
     fn updateAudio(self: *Haptics, frame: *const parser.HorizonFrame) void {
         if (self.config.motor_mode != .audio) return;
         const audio_backend = self.audio orelse return;
@@ -233,9 +219,9 @@ pub const Haptics = struct {
         audio_backend.setActive(racing);
     }
 
-    /// Maps surface rumble to classic motor bytes in simple mode.
+    /// Surface rumble -> classic motor bytes (simple mode only).
     fn updateMotors(self: *const Haptics, frame: *const parser.HorizonFrame, report: *ds.OutputReport) void {
-        // Forza SurfaceRumble is a 0..1 per-wheel road-surface force.
+        // SurfaceRumble is a 0..1 per-wheel force.
         const l = max2(frame.SurfaceRumbleFl, frame.SurfaceRumbleRl);
         const r = max2(frame.SurfaceRumbleFr, frame.SurfaceRumbleRr);
         switch (self.config.motor_mode) {
@@ -243,13 +229,11 @@ pub const Haptics = struct {
                 report.motor_right = scaleMotor(r);
                 report.motor_left = scaleMotor(l);
             },
-            // In audio mode the voice-coil actuators are driven by the
-            // synthesized stream; leave the classic rumble bytes zero.
+            // Audio mode drives the actuators via the audio stream instead.
             .audio => {},
         }
     }
 
-    /// Starts a short vibration burst when the reported gear changes.
     fn updateGearShift(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) void {
         if (self.prev_gear) |prev| {
             if (prev != frame.Gear) {
@@ -259,7 +243,7 @@ pub const Haptics = struct {
         self.prev_gear = frame.Gear;
     }
 
-    /// Left trigger = L2 = brake.
+    /// L2 = brake.
     fn leftTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.Effect {
         const p = self.config.params;
         if (frame.IsRaceOn == 0) return ds.effectOff();
@@ -272,14 +256,13 @@ pub const Haptics = struct {
             return ds.effectVibrate(p.abs_freq, p.abs_amp);
         }
 
-        // Resistance rises with pull depth so a hard, deep brake feels like a
-        // real hydraulic pedal. `brake_zone_max` caps the top-zone level.
+        // Resistance rises with pull depth, like a hydraulic pedal.
         const mag = ramp(frame.Brake, p.brake_deadzone, p.brake_zone_max);
         if (mag == 0) return ds.effectOff();
         return ds.effectRigidZones(risingZones(mag));
     }
 
-    /// Right trigger = R2 = throttle.
+    /// R2 = throttle.
     fn rightTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.Effect {
         const p = self.config.params;
         if (frame.IsRaceOn == 0) return ds.effectOff();
@@ -287,7 +270,6 @@ pub const Haptics = struct {
         if (now_ms < self.shift_until_ms) return ds.effectVibrate(p.shift_burst_freq, p.shift_burst_amp);
 
         if (frame.EngineMaxRpm > 0 and frame.CurrentEngineRpm >= frame.EngineMaxRpm * p.rev_limit_ratio) {
-            // Only felt at the top of the pull, where the limiter actually bites.
             return ds.effectVibrateZones(zoneBand(p.rev_limit_zone_start, zoneAmp(p.rev_limit_amp)), p.rev_limit_freq);
         }
 
@@ -301,24 +283,21 @@ pub const Haptics = struct {
         return ds.effectRigid(ramp(frame.Accel, p.throttle_deadzone, p.throttle_max_force));
     }
 
-    /// Detects wheel lock from tire slip values during braking.
     fn isLockingUp(self: *const Haptics, frame: *const parser.HorizonFrame) bool {
         const p = self.config.params;
         return maxAbs4(frame.TireSlipRatioFl, frame.TireSlipRatioFr, frame.TireSlipRatioRl, frame.TireSlipRatioRr) >= p.abs_slip_ratio_threshold or
             maxAbs4(frame.TireCombinedSlipFl, frame.TireCombinedSlipFr, frame.TireCombinedSlipRl, frame.TireCombinedSlipRr) >= p.abs_combined_slip_threshold;
     }
 
-    /// Detects wheelspin using slip at speed or rotation at low speed.
+    /// Slip at speed; raw wheel rotation at standstill (slip degenerates there).
     fn wheelSpinning(self: *const Haptics, frame: *const parser.HorizonFrame) bool {
         const p = self.config.params;
         if (frame.Speed > p.low_speed_mps) {
             return maxAbs4(frame.TireCombinedSlipFl, frame.TireCombinedSlipFr, frame.TireCombinedSlipRl, frame.TireCombinedSlipRr) >= p.wheelspin_slip_threshold;
         }
-        // Slip ratios degenerate at standstill; trust raw wheel rotation.
         return maxAbs4(frame.WheelRotationSpeedFl, frame.WheelRotationSpeedFr, frame.WheelRotationSpeedRl, frame.WheelRotationSpeedRr) >= p.burnout_rot_threshold;
     }
 
-    /// Converts tire slip into a wheelspin vibration frequency.
     fn wheelspinFreq(self: *const Haptics, frame: *const parser.HorizonFrame) u8 {
         const p = self.config.params;
         const slip = maxAbs4(frame.TireCombinedSlipFl, frame.TireCombinedSlipFr, frame.TireCombinedSlipRl, frame.TireCombinedSlipRr);
@@ -356,12 +335,8 @@ fn sideAudioCue(surface: f32, wheel_rotation: f32, combined_slip: f32, on_strip:
     return .{ .amp = amp, .freq = freq };
 }
 
-/// Converts gears 1-10 into symmetric player-LED patterns.
-///
-/// The DualSense firmware mirrors `player_leds` around its center bit, so only
-/// three independent channels exist: center (bit 2), inner pair (bits 3+1), and
-/// outer pair (bits 4+0). Patterns are ordered by increasing LED density so the
-/// bar roughly grows with the gear number.
+/// Gear -> player LED mask. The firmware mirrors `player_leds` around the
+/// center bit, so only 3 independent channels exist; patterns grow with gear.
 fn gearLedMask(gear: u8) u8 {
     const patterns = [_]u8{
         0b00100, // 1: center
@@ -379,12 +354,11 @@ fn gearLedMask(gear: u8) u8 {
     return patterns[gear - 1];
 }
 
-/// Converts a normalized rumble value to a DualSense motor byte.
 fn scaleMotor(v: f32) u8 {
     return @intFromFloat(std.math.clamp(finiteOrZero(v), 0, 1) * 255.0);
 }
 
-/// Zones 0..9 with resistance rising 0..`mag` along the pull (0 => all off).
+/// Zones 0..9 with resistance rising to `mag` along the pull.
 fn risingZones(mag: u8) [10]u8 {
     const m = std.math.clamp(mag, 0, 8);
     var zones: [10]u8 = undefined;
@@ -395,7 +369,7 @@ fn risingZones(mag: u8) [10]u8 {
     return zones;
 }
 
-/// Vibration amplitude band from zone `start`..9 at level `amp` (1..8).
+/// Zones `start`..9 at level `amp` (1..8), rest off.
 fn zoneBand(start: u8, amp: u8) [10]u8 {
     var zones = [_]u8{0} ** 10;
     const a = std.math.clamp(amp, 1, 8);
@@ -404,35 +378,30 @@ fn zoneBand(start: u8, amp: u8) [10]u8 {
     return zones;
 }
 
-/// 0..255 amplitude byte -> 1..8 per-zone level.
+/// 0..255 amplitude byte -> 1..8 zone level.
 fn zoneAmp(a: u8) u8 {
     return @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(a)) / 255.0 * 8.0, 1, 8));
 }
 
-/// Returns the greater finite value, treating invalid values as zero.
 fn max2(a: f32, b: f32) f32 {
     const left = finiteOrZero(a);
     const right = finiteOrZero(b);
     return if (left > right) left else right;
 }
 
-/// Replaces a non-finite telemetry value with zero.
 fn finiteOrZero(value: f32) f32 {
     return if (std.math.isFinite(value)) value else 0;
 }
 
-/// Returns the largest absolute value among four inputs.
 fn maxAbs4(a: f32, b: f32, c: f32, d: f32) f32 {
     return max2(max2(@abs(a), @abs(b)), max2(@abs(c), @abs(d)));
 }
 
-/// Returns monotonic time for gear-shift timing.
 fn nowMillis(io: Io) i64 {
     return platform.nowMillis(io);
 }
 
-// Offline replay: run every captured packet through the mapping and check the
-// produced report is structurally sane. No DualSense required.
+// Offline replay: run every captured packet through the mapping; no DualSense needed.
 test "replay all captured packets through the mapping" {
     var hap: Haptics = .{ .config = .{ .motor_mode = .audio, .lightbar_enabled = true, .leds_enabled = true } };
 
@@ -466,7 +435,6 @@ test "replay all captured packets through the mapping" {
         try std.testing.expectEqual(ds.Audio.SPEAKER_VOLUME_MAX, report.speaker_volume);
         try std.testing.expectEqual(ds.Audio.SP_PREAMP_GAIN_6DB, report.audio_control2);
 
-        // the trigger effects may only be one of the modes we emit
         const valid_modes = [_]u8{
             @intFromEnum(ds.EffectMode.reset),
             @intFromEnum(ds.EffectMode.rigid),
@@ -479,7 +447,7 @@ test "replay all captured packets through the mapping" {
 
         if (frame.IsRaceOn == 0) {
             saw_out_of_race = true;
-            // out of race: both triggers must be released
+            // out of race: triggers released
             try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.right_trigger_effect[0]);
             try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.left_trigger_effect[0]);
         } else {
@@ -564,18 +532,15 @@ test "gear LEDs use symmetric mirror-compatible patterns" {
 }
 
 test "trigger zone helpers" {
-    // rising resistance: monotone up the pull, capped at mag
     const r = risingZones(8);
     try std.testing.expectEqual(@as(u8, 0), r[0]);
     try std.testing.expectEqual(@as(u8, 8), r[9]);
     for (r, 0..) |v, i| {
         if (i > 0) try std.testing.expect(v >= r[i - 1]);
     }
-    // mag 0 -> all zones inactive (trigger free)
     const off = risingZones(0);
     for (off) |v| try std.testing.expectEqual(@as(u8, 0), v);
 
-    // band: silent below start, flat level from start..9
     const band = zoneBand(5, 6);
     try std.testing.expectEqual(@as(u8, 0), band[4]);
     try std.testing.expectEqual(@as(u8, 6), band[5]);
@@ -584,7 +549,6 @@ test "trigger zone helpers" {
     const empty = zoneBand(255, 6);
     for (empty) |v| try std.testing.expectEqual(@as(u8, 0), v);
 
-    // amplitude byte -> zone level
     try std.testing.expectEqual(@as(u8, 8), zoneAmp(255));
     try std.testing.expectEqual(@as(u8, 1), zoneAmp(1));
 }
@@ -618,7 +582,7 @@ test "wheelspin and rev-limit use vibrate zones" {
     const rev = hap.rightTrigger(&frame, now);
     try std.testing.expectEqual(@intFromEnum(ds.EffectMode.vibrate_zones), rev[0]);
 
-    // wheelspin: high accel + wheel slip while moving
+    // wheelspin: high accel + slip while moving
     frame.CurrentEngineRpm = 4000;
     frame.Speed = 30;
     frame.TireCombinedSlipFl = 1.2;

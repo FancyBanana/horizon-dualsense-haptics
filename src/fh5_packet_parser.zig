@@ -3,8 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// This is (probably) byte-accurate layout of a
-/// Forza Horizon 5 telemetry frame.
+/// Byte-accurate layout of a Forza Horizon 5 telemetry frame.
 pub const HorizonFrame = struct {
     // sled
     IsRaceOn: i32 = 0,
@@ -109,10 +108,8 @@ comptime {
     }
 }
 
-/// Parses data from a Forza Horizon 5 telemetry packet.
-/// Decodes one fixed-size little-endian Horizon telemetry packet.
-/// The struct is packed with no padding (verified by the comptime block
-/// above), so the frame is a plain little-endian byte image of the packet.
+/// Parses a fixed-size little-endian Horizon packet. The packed struct
+/// (checked above) is a plain byte image of the packet.
 pub fn parseHorizonPacket(data: [324]u8) HorizonFrame {
     var frame: HorizonFrame = undefined;
     @memcpy(std.mem.asBytes(&frame), &data);

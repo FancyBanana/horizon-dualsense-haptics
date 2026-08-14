@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Runtime configuration loaded from a key=value file (default
-//! `forza-haptics.conf` in the working directory) and overridable via CLI
-//! flags. Lets the user pick the motor backend: classic rumble bytes
-//! (works over Bluetooth) or audio-based haptics (needs the DualSense USB
-//! audio interface).
+//! Runtime configuration from a key=value file (default
+//! `forza-haptics.conf`), overridable via CLI flags.
 
 const std = @import("std");
 
-/// Default configuration file read from the working directory.
 pub const DEFAULT_CONFIG_PATH = "forza-haptics.conf";
-/// Default substring used to locate the DualSense audio sink.
 pub const DEFAULT_AUDIO_SINK = "dualsense";
 
-/// Selects how the controller's main haptic motors are driven.
+/// How the main haptic motors are driven.
 pub const MotorMode = enum {
     simple,
     audio,
 
-    /// Parses a motor mode name, returning null for unknown values.
     pub fn parse(s: []const u8) ?MotorMode {
         if (std.mem.eql(u8, s, "simple")) return .simple;
         if (std.mem.eql(u8, s, "audio")) return .audio;
@@ -26,13 +20,13 @@ pub const MotorMode = enum {
     }
 };
 
-/// Runtime settings loaded from the config file and command-line overrides.
+/// Settings loaded from the config file plus command-line overrides.
 pub const Config = struct {
     mode: MotorMode = .audio,
     audio_gain: f32 = 0.75,
     audio_sink: []const u8 = DEFAULT_AUDIO_SINK,
 
-    /// Loads settings from a key=value file, falling back to defaults on errors.
+    /// Loads key=value settings, falling back to defaults on errors.
     pub fn load(io: std.Io, allocator: std.mem.Allocator, path: []const u8) Config {
         var cfg = Config{};
         const contents = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(16 * 1024)) catch {

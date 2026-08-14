@@ -1,42 +1,49 @@
 const std = @import("std");
 
-/// Parsed command-line flags and values shared by all runtime modes.
+/// Polled by the main loop; set only by the signal handler.
+pub var g_stop = std.atomic.Value(bool).init(false);
+
+/// Async-signal-safe: atomic store only.
+pub fn handleSignal(sig: std.posix.SIG) callconv(.c) void {
+    _ = sig;
+    g_stop.store(true, .release);
+}
+
+/// Overrides SIGINT/SIGTERM (SIGINT defaults to SIG_IGN in background jobs).
+pub fn installSignalHandlers() void {
+    const act = std.posix.Sigaction{
+        .handler = .{ .handler = handleSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &act, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+}
+
+/// Parsed command-line flags and values.
 pub const CommandLineArgs = struct {
-    /// Print help and exit.
     help: bool = false,
-    /// Replay captured packets through the controller.
     replay: bool = false,
-    /// Optional channel number for an audio test tone; null disables the test.
+    /// Channel for the audio test tone; null disables. Empty = channel 0.
     audio_test: ?[]const u8 = null,
-    /// Repeat replay mode indefinitely.
     loop: bool = false,
-    /// Requested `simple` or `audio` motor mode.
+    /// `simple` or `audio`.
     motor_mode: ?[]const u8 = null,
-    /// Force simple rumble mode for a Bluetooth controller.
     bluetooth: bool = false,
-    /// Substring used to select the SDL audio device.
+    /// Substring matching the SDL audio device name.
     audio_sink: ?[]const u8 = null,
-    /// Audio output gain before rendering.
     audio_gain: ?[]const u8 = null,
-    /// Replay speed multiplier.
     speed: ?[]const u8 = null,
-    /// Save received telemetry packets using the default limit.
     save_packets: bool = false,
-    /// Maximum number of packets to save.
     capture_count: ?u32 = null,
-    /// Enable the RPM-driven RGB lightbar.
     lightbar: bool = false,
-    /// Enable the gear-indicator player LEDs.
     leds: bool = false,
-    /// Record packets without initializing audio or HID backends.
     record_only: bool = false,
-    /// IP address on which to receive telemetry.
     ip_address: ?[]const u8 = null,
-    /// UDP port on which to receive telemetry.
     port: ?u16 = null,
 };
 
-/// Parses argv once and returns values shared by all application modes.
+/// Parses argv into CommandLineArgs.
 pub fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     var args = CommandLineArgs{};
@@ -71,7 +78,6 @@ pub fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
         } else if (std.mem.eql(u8, arg, "--ip-address")) {
             args.ip_address = takeValue(argv, &i) orelse return error.MissingArgument;
         } else if (std.mem.eql(u8, arg, "--audio-test")) {
-            // Optional channel; without one, defaults to channel 0.
             args.audio_test = takeValue(argv, &i) orelse "";
         } else if (std.mem.eql(u8, arg, "--port")) {
             const value = takeValue(argv, &i) orelse return error.InvalidPort;
@@ -91,8 +97,7 @@ pub fn parseCommandLine(init: std.process.Init) !CommandLineArgs {
     return args;
 }
 
-/// Returns the next argument if it is a value, not another `--` option.
-/// On success advances `i` past the value; otherwise `i` stays put.
+/// Returns the next argument if it is a value, advancing `i`.
 pub fn takeValue(argv: []const [:0]const u8, i: *usize) ?[]const u8 {
     if (i.* + 1 >= argv.len) return null;
     const value = argv[i.* + 1];
@@ -101,7 +106,6 @@ pub fn takeValue(argv: []const [:0]const u8, i: *usize) ?[]const u8 {
     return value;
 }
 
-/// Prints usage information for all command-line options.
 pub fn printHelp() void {
     const usage =
         \\Usage: horizon-dualsense-haptics [options]

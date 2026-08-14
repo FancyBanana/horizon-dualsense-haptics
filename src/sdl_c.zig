@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Raw SDL3 C bindings, kept behind one import so the rest of the app only
-//! sees the small `sdl` namespace. The `sdl` build dependency (castholm/SDL)
-//! statically compiles SDL3 and ships its headers; the build script exposes
-//! its `include/` directory to this module, so `@cImport` resolves the
-//! SDL3/SDL_*.h headers without any system SDL. Only the audio and HIDAPI
-//! subsets are imported, which keeps the bindings focused.
+//! Raw SDL3 C bindings (audio + HIDAPI subsets) behind one import. The
+//! `sdl` build dependency statically compiles SDL3 and ships its headers.
 
 /// SDL3 C declarations used by the audio and HID backends.
 pub const c = @cImport({

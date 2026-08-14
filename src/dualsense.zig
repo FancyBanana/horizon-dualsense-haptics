@@ -1,89 +1,68 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//! DualSense USB/Bluetooth HID protocols and trigger-effect encodings.
+//! Platform device access lives in device.zig.
+
 const std = @import("std");
 
-// The DualSense USB/Bluetooth HID protocols and trigger-effect encodings.
-// Platform-specific device access lives in device.zig.
-
-/// Sony's USB vendor identifier.
 pub const VENDOR_ID: u16 = 0x054C;
-/// Product identifiers for DualSense and DualSense Edge controllers.
 pub const PRODUCT_IDS = [_]u16{ 0x0CE6, 0x0DF2 };
 
-/// Physical transport used for DualSense HID reports.
 pub const Bus = enum {
     usb,
     bluetooth,
 };
 
-/// USB output report identifier.
 pub const USB_REPORT_ID: u8 = 0x02;
-/// USB output report size in bytes.
 pub const USB_REPORT_SIZE: usize = 48;
-/// Bluetooth output report identifier.
 pub const BT_REPORT_ID: u8 = 0x31;
-/// Bluetooth output report size in bytes.
 pub const BT_REPORT_SIZE: usize = 78;
-/// Bluetooth output transport tag.
 pub const BT_OUTPUT_TAG: u8 = 0x10;
 const BT_CRC_SEED: u8 = 0xA2;
 
-/// valid_flag0 (report byte 1) bits. Each bit says which group of fields this
-/// packet is allowed to change.
+/// valid_flag0 (byte 1): which field groups this packet may change.
 pub const Flag0 = struct {
     pub const RUMBLE: u8 = 0x01 | 0x02; // classic vibration: main motors
     pub const RIGHT_TRIGGER: u8 = 0x04;
     pub const LEFT_TRIGGER: u8 = 0x08;
-    pub const AUDIO_VOLUME: u8 = 0x10; // apply the headphone/speaker/mic volume bytes
-    pub const INTERNAL_SPEAKER: u8 = 0x20; // apply the internal-speaker routing byte
+    pub const AUDIO_VOLUME: u8 = 0x10;
+    pub const INTERNAL_SPEAKER: u8 = 0x20;
     pub const MIC_VOLUME: u8 = 0x40;
     pub const INTERNAL_MIC: u8 = 0x80;
     pub const ALL: u8 = RUMBLE | RIGHT_TRIGGER | LEFT_TRIGGER;
-    /// Native audio-haptics mode (0xFC): triggers + audio control, but no
-    /// rumble bits. Setting the rumble bits puts the controller in classic
-    /// rumble emulation, which silences the voice-coil haptics path (the state
-    /// DS4Windows/PCGamingWiki call `UseRumbleNotHaptics = 0xFF` vs `0xFC`).
+    /// Native audio-haptics (0xFC): triggers + audio control, no rumble bits.
+    /// Rumble bits switch to classic emulation and silence the voice coils.
     pub const AUDIO_HAPTICS: u8 = RIGHT_TRIGGER | LEFT_TRIGGER | AUDIO_VOLUME |
         INTERNAL_SPEAKER | MIC_VOLUME | INTERNAL_MIC;
 };
 
-/// valid_flag1 (report byte 2) bits.
+/// valid_flag1 (byte 2).
 pub const Flag1 = struct {
-    /// Apply the `audio_control2` byte (report byte 38). The kernel driver
-    /// sets this alongside Flag0.AUDIO_HAPTICS when enabling the
-    /// internal-speaker preamp gain (+6 dB), which boosts the haptic path.
+    /// Apply `audio_control2` (byte 38); kernel sets it with Flag0.AUDIO_HAPTICS.
     pub const AUDIO_CONTROL2_ENABLE: u8 = 0x80;
-    /// Enable lightbar RGB fields.
     pub const LIGHTBAR_CONTROL_ENABLE: u8 = 0x04;
-    /// Enable player-indicator LED fields.
     pub const PLAYER_INDICATOR_CONTROL_ENABLE: u8 = 0x10;
 };
 
-/// Audio-control fields (report bytes 5-8, 38).
+/// Audio-control fields (bytes 5-8, 38).
 pub const Audio = struct {
-    /// Internal-speaker routing in `audio_enable_bits` (byte 8): enable the
-    /// internal speaker and mute the headphone jack. Sony's firmware mutes the
-    /// internal output by default; this byte (OUTPUT_PATH_SEL = 3) un-mutes it,
-    /// which is also what routes RL/RR to the haptic actuators.
+    /// Byte 8: un-mute internal speaker (OUTPUT_PATH_SEL = 3) and route
+    /// RL/RR to the haptic actuators.
     pub const PATH_SEL_INTERNAL_SPEAKER: u8 = 0x30;
-    /// Speaker/haptics volume (byte 6). The PS5 firmware only honours the
-    /// 0x3d..0x64 range; 0x64 = 100%.
+    /// Byte 6: firmware honours 0x3d..0x64; 0x64 = 100%.
     pub const SPEAKER_VOLUME_MAX: u8 = 0x64;
-    /// SP preamp gain +6 dB (byte 38, `audio_control2`).
+    /// Byte 38: speaker preamp gain +6 dB.
     pub const SP_PREAMP_GAIN_6DB: u8 = 0x02;
 };
 
-/// valid_flag2 (report byte 39) bits.
+/// valid_flag2 (byte 39).
 pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation, firmware 2.24+
-/// Enable the lightbar setup field.
 pub const FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE: u8 = 0x02;
-/// Lightbar setup value that turns the lightbar off.
 pub const LIGHTBAR_SETUP_LIGHT_OUT: u8 = 0x02;
 
-/// Trigger effect mode bytes (byte 0 of the 11-byte effect section).
-/// Trigger effect encoding understood by the DualSense firmware.
+/// Trigger effect mode byte (byte 0 of the 11-byte effect section).
 pub const EffectMode = enum(u8) {
-    reset = 0x05, // disengage the effect and withdraw the actuator
+    reset = 0x05, // release the actuator
     rigid = 0x01, // uniform resistance: [start_pos, force]
     vibrate = 0x06, // vibration: [freq, amp, start_pos]
     rigid_zones = 0x21, // per-zone resistance, 10 zones x 3 bits
@@ -106,7 +85,7 @@ pub const OutputReport = extern struct {
     right_trigger_effect: [11]u8 = [_]u8{0} ** 11,
     left_trigger_effect: [11]u8 = [_]u8{0} ** 11,
     unknown1: [5]u8 = [_]u8{0} ** 5,
-    audio_control2: u8 = 0, // byte 38: internal-speaker preamp gain (+6 dB)
+    audio_control2: u8 = 0, // byte 38: speaker preamp gain (+6 dB)
     valid_flag2: u8 = FLAG2_RUMBLE_V2,
     unknown2: [2]u8 = [_]u8{0} ** 2,
     lightbar_setup: u8 = 0,
@@ -117,8 +96,8 @@ pub const OutputReport = extern struct {
     led_blue: u8 = 0,
 };
 
-/// The Bluetooth output report wraps the USB report's 47-byte common section
-/// with a sequence nibble, transport tag, padding, and a CRC32-LE checksum.
+/// Bluetooth report: the USB report's 47-byte common section wrapped in a
+/// sequence nibble, transport tag, padding, and CRC32-LE checksum.
 pub const BtOutputReport = extern struct {
     report_id: u8 = BT_REPORT_ID,
     sequence: u8 = 0,
@@ -127,7 +106,6 @@ pub const BtOutputReport = extern struct {
     reserved: [24]u8 = [_]u8{0} ** 24,
     crc: [4]u8 = [_]u8{0} ** 4,
 
-    /// Wraps a USB report in the Bluetooth transport envelope and CRC.
     pub fn fromUsb(report: *const OutputReport, sequence: u8) BtOutputReport {
         var bt: BtOutputReport = .{ .sequence = (sequence & 0x0F) << 4 };
         const usb_bytes = std.mem.asBytes(report);
@@ -158,7 +136,6 @@ fn bluetoothCrc(bytes: []const u8) u32 {
     return ~crc;
 }
 
-/// Updates a reflected CRC32 accumulator with the supplied bytes.
 fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
     var crc = initial;
     for (bytes) |byte| {
@@ -171,36 +148,30 @@ fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
     return crc;
 }
 
-/// Eleven-byte DualSense trigger effect payload.
+/// Eleven-byte trigger effect payload.
 pub const Effect = [11]u8;
 
-/// Disables a trigger effect and releases the actuator.
 pub fn effectOff() Effect {
     return makeEffect(.reset, &.{});
 }
 
-/// Uniform resistance. `force` 0..255; 0 is a low force, not off.
-/// Creates a uniform trigger resistance effect.
+/// Uniform resistance; `force` 0..255 (0 is low force, not off).
 pub fn effectRigid(force: u8) Effect {
     return makeEffect(.rigid, &.{ 0, force });
 }
 
-/// Vibration. `freq` in Hz (0..255), `amp` 0..255.
-/// Creates a uniform trigger vibration effect.
 pub fn effectVibrate(freq: u8, amp: u8) Effect {
     return makeEffect(.vibrate, &.{ freq, amp });
 }
 
-/// Per-zone resistance. `zones` holds 10 strengths, 0 = inactive, 1..8 = resistance.
-/// Creates a trigger resistance effect with ten independent zones.
+/// Per-zone resistance; 10 zones, 0 = inactive, 1..8 = strength.
 pub fn effectRigidZones(zones: [10]u8) Effect {
     var e = makeEffect(.rigid_zones, &.{});
     e[1..7].* = packZones(zones);
     return e;
 }
 
-/// Per-zone vibration. `zones` holds 10 amplitudes, 0 = inactive, 1..8 = amplitude.
-/// Creates a trigger vibration effect with ten independent zones.
+/// Per-zone vibration; 10 zones, 0 = inactive, 1..8 = amplitude.
 pub fn effectVibrateZones(zones: [10]u8, freq: u8) Effect {
     var e = makeEffect(.vibrate_zones, &.{});
     e[1..7].* = packZones(zones);
@@ -208,7 +179,6 @@ pub fn effectVibrateZones(zones: [10]u8, freq: u8) Effect {
     return e;
 }
 
-/// Builds an 11-byte effect payload from a mode and parameter bytes.
 fn makeEffect(mode: EffectMode, params: []const u8) Effect {
     var e: Effect = [_]u8{0} ** 11;
     e[0] = @intFromEnum(mode);
@@ -216,8 +186,8 @@ fn makeEffect(mode: EffectMode, params: []const u8) Effect {
     return e;
 }
 
-/// Packs 10 zone strengths into the 6-byte (active mask + 3-bit-per-zone)
-/// payload shared by the zone effect modes. Mirrors the kernel/SDL encoding.
+/// Packs 10 zone levels into the 6-byte active-mask + 3-bits-per-zone
+/// payload (kernel/SDL encoding).
 fn packZones(zones: [10]u8) [6]u8 {
     var active: u16 = 0;
     var packed_bits: u32 = 0;
@@ -288,7 +258,7 @@ test "trigger effect encodings" {
     try std.testing.expectEqual(20, vibrate[1]);
     try std.testing.expectEqual(130, vibrate[2]);
 
-    // top 2 zones maxed -> active mask bits 8 and 9 -> active = 0x0300
+    // top 2 zones maxed -> active = 0x0300
     const zones = effectRigidZones(.{ 0, 0, 0, 0, 0, 0, 0, 0, 8, 8 });
     try std.testing.expectEqual(@intFromEnum(EffectMode.rigid_zones), zones[0]);
     try std.testing.expectEqual(0x00, zones[1]); // active mask low byte
@@ -296,18 +266,18 @@ test "trigger effect encodings" {
     try std.testing.expectEqual(0x00, zones[3]); // packed bits 0-7 (zones 0-2)
     try std.testing.expectEqual(0x00, zones[4]); // packed bits 8-15 (zones 3-5)
     try std.testing.expectEqual(0x00, zones[5]); // packed bits 16-23 (zones 6-7)
-    try std.testing.expectEqual(0x3F, zones[6]); // packed bits 24-29 (zones 8-9, 7+7)
+    try std.testing.expectEqual(0x3F, zones[6]); // packed bits 24-29 (zones 8-9)
 
-    // all zones maxed -> the 30-bit packed field is all ones, freq lands at 9
+    // all zones maxed -> 30-bit packed field all ones, freq at byte 9
     const all = effectVibrateZones(.{ 8, 8, 8, 8, 8, 8, 8, 8, 8, 8 }, 20);
     try std.testing.expectEqual(@intFromEnum(EffectMode.vibrate_zones), all[0]);
-    try std.testing.expectEqual(0xFF, all[1]); // active mask low byte
-    try std.testing.expectEqual(0x03, all[2]); // active mask high byte
-    try std.testing.expectEqual(0xFF, all[3]); // packed bits 0-7
-    try std.testing.expectEqual(0xFF, all[4]); // packed bits 8-15
-    try std.testing.expectEqual(0xFF, all[5]); // packed bits 16-23
-    try std.testing.expectEqual(0x3F, all[6]); // packed bits 24-29 (30 bits)
-    try std.testing.expectEqual(20, all[9]); // frequency byte
+    try std.testing.expectEqual(0xFF, all[1]);
+    try std.testing.expectEqual(0x03, all[2]);
+    try std.testing.expectEqual(0xFF, all[3]);
+    try std.testing.expectEqual(0xFF, all[4]);
+    try std.testing.expectEqual(0xFF, all[5]);
+    try std.testing.expectEqual(0x3F, all[6]);
+    try std.testing.expectEqual(20, all[9]);
 
     const clamped = effectRigidZones(.{ 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 });
     try std.testing.expectEqual(0x3F, clamped[6]);
