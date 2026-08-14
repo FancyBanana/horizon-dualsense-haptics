@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const Io = std.Io;
-const parser = @import("packet_parser.zig");
+const parser = @import("fh5_packet_parser.zig");
 const ds = @import("dualsense.zig");
 const device = @import("device.zig");
 const audio = @import("audio.zig");

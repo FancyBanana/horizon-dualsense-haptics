@@ -17,17 +17,29 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const root_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wireSdl(root_mod, sdl);
+
     const exe = b.addExecutable(.{
         .name = "horizon-dualsense-haptics",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = root_mod,
     });
-    wireSdl(exe.root_module, sdl);
     applySframeWorkaround(exe); // .sframe relocation bug
     b.installArtifact(exe);
+
+    // Compiled but never installed or run: zls invokes this via the `check`
+    // step for compile-on-save diagnostics without building the full binary.
+    const exe_check = b.addExecutable(.{
+        .name = "horizon-dualsense-haptics",
+        .root_module = root_mod,
+    });
+    applySframeWorkaround(exe_check);
+    const check_step = b.step("check", "Check the exe compiles");
+    check_step.dependOn(&exe_check.step);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -67,7 +79,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_dualsense_tests.step);
 
     const parser_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/packet_parser.zig"),
+        .root_source_file = b.path("src/fh5_packet_parser.zig"),
         .target = target,
         .optimize = optimize,
     });
