@@ -48,9 +48,10 @@ pub const AudioHaptics = struct {
     sdl_inited: bool = false,
 
     sink_name: []const u8 = config.DEFAULT_AUDIO_SINK,
+    /// Read by the audio thread; set before `start` and never mutated after.
     gain: f32 = 0.75,
 
-    // published by the telemetry thread, read by the SDL audio thread
+    // published by the main loop, read by the SDL audio thread
     active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     l_amp: std.atomic.Value(f32) = std.atomic.Value(f32).init(0),
     r_amp: std.atomic.Value(f32) = std.atomic.Value(f32).init(0),
@@ -155,15 +156,18 @@ pub const AudioHaptics = struct {
         const r_freq = self.r_freq.load(.monotonic);
         const test_channel = self.test_channel.load(.monotonic);
 
-        // Freshness envelope: fade out when telemetry stops publishing.
+        // Freshness target: fade out when telemetry stops publishing.
+        // (Checked once per buffer; the ~250 ms granularity doesn't need more.)
         const elapsed_ms = nowMillis(self.io) - self.last_update.load(.monotonic);
         const fresh_target: f32 = if (elapsed_ms < FRESH_TIMEOUT_MS) 1.0 else 0.0;
-        self.fresh_env += FRESH_COEFF * (fresh_target - self.fresh_env);
-        const fresh = self.fresh_env;
 
         var i: usize = 0;
         const dst: [*]i16 = @ptrCast(@alignCast(buf.ptr));
         while (i < n_frames) : (i += 1) {
+            // Per-sample smoothing, same cadence as the envelopes in renderChannel.
+            self.fresh_env += FRESH_COEFF * (fresh_target - self.fresh_env);
+            const fresh = self.fresh_env;
+
             var v: [4]i16 = .{ 0, 0, 0, 0 };
             if (test_channel >= 0) {
                 const chan: usize = @intCast(@min(test_channel, 3));

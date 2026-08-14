@@ -5,6 +5,6 @@
 const std = @import("std");
 
 /// Monotonic elapsed time in milliseconds (never jumps).
-pub fn nowMillis(io: std.Io) i64 {
+pub inline fn nowMillis(io: std.Io) i64 {
     return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }

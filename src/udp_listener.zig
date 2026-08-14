@@ -25,16 +25,12 @@ pub const Listener = struct {
     io: std.Io,
     options: Options = .{},
     socket: ?net.Socket = null,
-    packet_counter: usize = 0,
-    should_continue: std.atomic.Value(bool) = .init(true),
-    /// Written before the receive loop returns; read after `join`.
-    last_error: ?anyerror = null,
 
     pub fn init(io: std.Io) Listener {
         return .{ .io = io };
     }
 
-    /// Binds the UDP socket; errors surface before the thread starts.
+    /// Binds the UDP socket.
     pub fn bind(self: *Listener, options: ?Options) !void {
         if (options) |opts| {
             self.options = opts;
@@ -50,51 +46,30 @@ pub const Listener = struct {
         self.socket = null;
     }
 
-    /// Logs failures so a thread's death is never silent.
-    fn fail(self: *Listener, err: anyerror) void {
-        self.last_error = err;
-        std.log.err("listener: {s}", .{@errorName(err)});
-    }
-
-    /// Dispatches datagrams until `stop` or a fatal receive error.
-    /// Requires `bind` first.
-    pub fn listen(self: *Listener, handler: Handler) void {
-        const sock = self.socket orelse {
-            std.log.err("listener: listen called before bind", .{});
-            return;
+    /// One receive cycle with a short timeout; dispatches at most one
+    /// datagram. Returns an error on fatal socket failure.
+    pub fn poll(self: *Listener, handler: Handler) !void {
+        const sock = self.socket orelse return;
+        var buf: [MAX_DATAGRAM_SIZE]u8 = undefined;
+        const msg = sock.receiveTimeout(
+            self.io,
+            &buf,
+            .{ .duration = .{ .raw = .fromMilliseconds(10), .clock = .boot } },
+        ) catch |err| switch (err) {
+            error.Timeout => return,
+            // Transient: the socket is still usable.
+            error.MessageOversize,
+            error.ConnectionResetByPeer,
+            error.NetworkDown,
+            error.PortUnreachable,
+            => {
+                std.log.warn("listener: transient receive error {s}", .{@errorName(err)});
+                return;
+            },
+            else => return err,
         };
-        defer self.close();
-        while (self.should_continue.load(.unordered)) {
-            var buf: [MAX_DATAGRAM_SIZE]u8 = undefined;
-            // Short timeout keeps shutdown latency low (~100 Hz poll).
-            const msg = sock.receiveTimeout(
-                self.io,
-                &buf,
-                .{ .duration = .{ .raw = .fromMilliseconds(10), .clock = .boot } },
-            ) catch |err| switch (err) {
-                error.Timeout => continue,
-                // Transient: the socket is still usable.
-                error.MessageOversize,
-                error.ConnectionResetByPeer,
-                error.NetworkDown,
-                error.PortUnreachable,
-                => {
-                    std.log.warn("listener: transient receive error {s}", .{@errorName(err)});
-                    continue;
-                },
-                // Fatal: the socket can no longer accept packets.
-                else => return self.fail(err),
-            };
-            self.packet_counter += 1;
-            handler.process(handler.context, msg.data) catch |err| {
-                std.log.err("packet handler: {s}", .{@errorName(err)});
-                continue;
-            };
-        }
-    }
-
-    /// Requests `listen` to exit; safe from any thread.
-    pub fn stop(self: *Listener) void {
-        self.should_continue.store(false, .unordered);
+        handler.process(handler.context, msg.data) catch |err| {
+            std.log.err("packet handler: {s}", .{@errorName(err)});
+        };
     }
 };

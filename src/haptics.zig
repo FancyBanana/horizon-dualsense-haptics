@@ -110,8 +110,8 @@ pub const Haptics = struct {
     fn resetReport(self: *const Haptics) ds.OutputReport {
         var report: ds.OutputReport = .{};
         self.configureAudioReport(&report);
-        report.right_trigger_effect = ds.effectOff();
-        report.left_trigger_effect = ds.effectOff();
+        report.right_trigger_effect = ds.triggerEffectOff();
+        report.left_trigger_effect = ds.triggerEffectOff();
         if (self.config.lightbar_enabled) {
             report.valid_flag1 |= ds.Flag1.LIGHTBAR_CONTROL_ENABLE;
             report.valid_flag2 |= ds.FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE;
@@ -244,43 +244,43 @@ pub const Haptics = struct {
     }
 
     /// L2 = brake.
-    fn leftTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.Effect {
+    fn leftTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.TriggerEffect {
         const p = self.config.params;
-        if (frame.IsRaceOn == 0) return ds.effectOff();
+        if (frame.IsRaceOn == 0) return ds.triggerEffectOff();
 
-        if (now_ms < self.shift_until_ms) return ds.effectVibrate(p.shift_burst_freq, p.shift_burst_amp);
+        if (now_ms < self.shift_until_ms) return ds.triggerEffectVibrate(p.shift_burst_freq, p.shift_burst_amp);
 
-        if (frame.HandBrake > 0) return ds.effectRigid(p.handbrake_force);
+        if (frame.HandBrake > 0) return ds.triggerEffectRigid(p.handbrake_force);
 
         if (frame.Brake >= p.abs_brake_threshold and self.isLockingUp(frame)) {
-            return ds.effectVibrate(p.abs_freq, p.abs_amp);
+            return ds.triggerEffectVibrate(p.abs_freq, p.abs_amp);
         }
 
         // Resistance rises with pull depth, like a hydraulic pedal.
         const mag = ramp(frame.Brake, p.brake_deadzone, p.brake_zone_max);
-        if (mag == 0) return ds.effectOff();
-        return ds.effectRigidZones(risingZones(mag));
+        if (mag == 0) return ds.triggerEffectOff();
+        return ds.triggerEffectRigidZones(risingZones(mag));
     }
 
     /// R2 = throttle.
-    fn rightTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.Effect {
+    fn rightTrigger(self: *Haptics, frame: *const parser.HorizonFrame, now_ms: i64) ds.TriggerEffect {
         const p = self.config.params;
-        if (frame.IsRaceOn == 0) return ds.effectOff();
+        if (frame.IsRaceOn == 0) return ds.triggerEffectOff();
 
-        if (now_ms < self.shift_until_ms) return ds.effectVibrate(p.shift_burst_freq, p.shift_burst_amp);
+        if (now_ms < self.shift_until_ms) return ds.triggerEffectVibrate(p.shift_burst_freq, p.shift_burst_amp);
 
         if (frame.EngineMaxRpm > 0 and frame.CurrentEngineRpm >= frame.EngineMaxRpm * p.rev_limit_ratio) {
-            return ds.effectVibrateZones(zoneBand(p.rev_limit_zone_start, zoneAmp(p.rev_limit_amp)), p.rev_limit_freq);
+            return ds.triggerEffectVibrateZones(zoneBand(p.rev_limit_zone_start, zoneAmp(p.rev_limit_amp)), p.rev_limit_freq);
         }
 
         if (frame.Accel >= p.wheelspin_accel_threshold and self.wheelSpinning(frame)) {
-            return ds.effectVibrateZones(
+            return ds.triggerEffectVibrateZones(
                 zoneBand(p.wheelspin_zone_start, zoneAmp(p.wheelspin_amp)),
                 self.wheelspinFreq(frame),
             );
         }
 
-        return ds.effectRigid(ramp(frame.Accel, p.throttle_deadzone, p.throttle_max_force));
+        return ds.triggerEffectRigid(ramp(frame.Accel, p.throttle_deadzone, p.throttle_max_force));
     }
 
     fn isLockingUp(self: *const Haptics, frame: *const parser.HorizonFrame) bool {

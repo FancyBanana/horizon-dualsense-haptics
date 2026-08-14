@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 const std = @import("std");
-const Io = std.Io;
 const updlstn = @import("udp_listener.zig");
 const parser = @import("fh5_packet_parser.zig");
 const haptics = @import("haptics.zig");
@@ -16,53 +15,15 @@ const MAX_FRAME_GAP_MS: u32 = 250;
 
 /// `audio` must outlive `hap`, which points at it.
 const App = struct {
+    io: std.Io = undefined,
     hap: haptics.Haptics = .{},
     audio: audio.AudioHaptics = .{},
     cfg: config.Config = .{},
 };
 
-/// Latest-wins frame handoff: receiver thread publishes, main thread consumes.
-/// Stale frames are overwritten.
-fn LatestFrame(comptime Frame: type) type {
-    return struct {
-        io: std.Io,
-        mutex: std.Io.Mutex = std.Io.Mutex.init,
-        frame: Frame = undefined,
-        epoch: u64 = 0,
-        done: bool = false,
-
-        const Self = @This();
-
-        fn publish(self: *Self, frame: *const Frame) void {
-            self.mutex.lock(self.io) catch return;
-            defer self.mutex.unlock(self.io);
-            self.frame = frame.*;
-            self.epoch +%= 1;
-        }
-
-        /// Returns the newest frame if newer than `seen`, else a no-change marker.
-        fn waitFrame(self: *Self, seen: u64) struct { frame: Frame, epoch: u64, done: bool } {
-            self.mutex.lock(self.io) catch return .{ .frame = undefined, .epoch = seen, .done = true };
-            defer self.mutex.unlock(self.io);
-            if (self.epoch == seen) {
-                return .{ .frame = undefined, .epoch = seen, .done = self.done };
-            }
-            return .{ .frame = self.frame, .epoch = self.epoch, .done = self.done };
-        }
-
-        fn stop(self: *Self) void {
-            self.mutex.lock(self.io) catch return;
-            defer self.mutex.unlock(self.io);
-            self.done = true;
-        }
-    };
-}
-
-const ForzaChannel = LatestFrame(parser.HorizonFrame);
-
-/// Receiver-thread handler: validate, parse, publish. Slow work stays on main.
-fn publishForzaFrame(ctx: *const anyopaque, data: []const u8) anyerror!void {
-    const latest: *ForzaChannel = @ptrCast(@alignCast(@constCast(ctx)));
+/// Validates and parses one datagram, then updates the haptics.
+fn processFrame(ctx: *const anyopaque, data: []const u8) anyerror!void {
+    const app: *App = @ptrCast(@alignCast(@constCast(ctx)));
     if (data.len != parser.PACKET_SIZE) {
         std.log.warn("fh5: wrong datagram size {d} (expected {d})", .{ data.len, parser.PACKET_SIZE });
         return;
@@ -70,7 +31,7 @@ fn publishForzaFrame(ctx: *const anyopaque, data: []const u8) anyerror!void {
     var buf: [parser.PACKET_SIZE]u8 = undefined;
     @memcpy(&buf, data);
     const frame = parser.parseHorizonPacket(buf);
-    latest.publish(&frame);
+    app.hap.update(app.io, &frame);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -86,54 +47,23 @@ pub fn main(init: std.process.Init) !void {
     // if (args.replay) return replay(init, args);
     // if (args.audio_test != null) return audioTest(init, args);
 
-    var app: App = .{};
+    var app: App = .{ .io = init.io };
     try setupApp(init, &app, args);
     defer app.audio.stop();
     defer app.hap.shutdown();
 
-    var latest: ForzaChannel = .{ .io = init.io };
     var listener = updlstn.Listener.init(init.io);
     try listener.bind(.{ .ip_address = args.ip_address orelse updlstn.DEFAULT_IP_ADDRESS, .port = args.port orelse updlstn.DEFAULT_PORT });
     defer listener.close();
 
-    const listener_thread = std.Thread.spawn(.{}, updlstn.Listener.listen, .{
-        &listener,
-        updlstn.Handler{ .context = &latest, .process = publishForzaFrame },
-    }) catch |err| {
-        std.log.err("spawn listener: {s}", .{@errorName(err)});
-        return err;
-    };
-    // LIFO teardown; close the socket only after join, or the receiver may
-    // hit EBADF inside receiveTimeout.
-    defer {
-        listener.close();
-    }
-    defer {
-        listener_thread.join();
-    }
-    defer {
-        listener.stop();
-    }
-    defer {
-        latest.stop();
-    }
-    defer {
-        app.hap.shutdown();
-    }
-    defer {
-        app.audio.stop();
-    }
+    const handler = updlstn.Handler{ .context = &app, .process = processFrame };
 
     std.debug.print("listening for telemetry on UDP {s}:{d} (Ctrl-C to stop)\n", .{ args.ip_address orelse updlstn.DEFAULT_IP_ADDRESS, args.port orelse updlstn.DEFAULT_PORT });
-    var seen: u64 = 0;
     while (!utils.g_stop.load(.acquire)) {
-        const up = latest.waitFrame(seen);
-        if (up.done) break;
-        if (up.epoch != seen) {
-            seen = up.epoch;
-            app.hap.update(init.io, &up.frame);
-        }
-        std.Io.sleep(init.io, std.Io.Duration.fromMilliseconds(10), .boot) catch break;
+        listener.poll(handler) catch |err| {
+            std.log.err("listener: {s}", .{@errorName(err)});
+            return err;
+        };
     }
     std.debug.print("shutting down\n", .{});
 }
@@ -202,7 +132,7 @@ fn audioTest(init: std.process.Init, args: utils.CommandLineArgs) !void {
 /// --loop repeats; --speed scales playback rate.
 fn replay(init: std.process.Init, args: utils.CommandLineArgs) !void {
     const io = init.io;
-    var app: App = .{};
+    var app: App = .{ .io = io };
     try setupApp(init, &app, args);
     defer app.audio.stop();
     defer app.hap.shutdown();

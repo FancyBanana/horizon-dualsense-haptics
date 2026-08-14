@@ -149,38 +149,38 @@ fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
 }
 
 /// Eleven-byte trigger effect payload.
-pub const Effect = [11]u8;
+pub const TriggerEffect = [11]u8;
 
-pub fn effectOff() Effect {
+pub fn triggerEffectOff() TriggerEffect {
     return makeEffect(.reset, &.{});
 }
 
 /// Uniform resistance; `force` 0..255 (0 is low force, not off).
-pub fn effectRigid(force: u8) Effect {
+pub fn triggerEffectRigid(force: u8) TriggerEffect {
     return makeEffect(.rigid, &.{ 0, force });
 }
 
-pub fn effectVibrate(freq: u8, amp: u8) Effect {
+pub fn triggerEffectVibrate(freq: u8, amp: u8) TriggerEffect {
     return makeEffect(.vibrate, &.{ freq, amp });
 }
 
 /// Per-zone resistance; 10 zones, 0 = inactive, 1..8 = strength.
-pub fn effectRigidZones(zones: [10]u8) Effect {
+pub fn triggerEffectRigidZones(zones: [10]u8) TriggerEffect {
     var e = makeEffect(.rigid_zones, &.{});
     e[1..7].* = packZones(zones);
     return e;
 }
 
 /// Per-zone vibration; 10 zones, 0 = inactive, 1..8 = amplitude.
-pub fn effectVibrateZones(zones: [10]u8, freq: u8) Effect {
+pub fn triggerEffectVibrateZones(zones: [10]u8, freq: u8) TriggerEffect {
     var e = makeEffect(.vibrate_zones, &.{});
     e[1..7].* = packZones(zones);
     e[9] = freq;
     return e;
 }
 
-fn makeEffect(mode: EffectMode, params: []const u8) Effect {
-    var e: Effect = [_]u8{0} ** 11;
+fn makeEffect(mode: EffectMode, params: []const u8) TriggerEffect {
+    var e: TriggerEffect = [_]u8{0} ** 11;
     e[0] = @intFromEnum(mode);
     for (params, 1..) |p, i| e[i] = p;
     return e;
@@ -219,7 +219,7 @@ test "bluetooth report wraps USB fields and checksum" {
     var usb: OutputReport = .{};
     usb.motor_left = 0x12;
     usb.motor_right = 0x34;
-    usb.left_trigger_effect = effectRigid(180);
+    usb.left_trigger_effect = triggerEffectRigid(180);
 
     const bt = BtOutputReport.fromUsb(&usb, 3);
     try std.testing.expectEqual(BT_REPORT_ID, bt.report_id);
@@ -245,21 +245,21 @@ test "crc32 little-endian known vector" {
 }
 
 test "trigger effect encodings" {
-    const off = effectOff();
+    const off = triggerEffectOff();
     try std.testing.expectEqual(@intFromEnum(EffectMode.reset), off[0]);
 
-    const rigid = effectRigid(180);
+    const rigid = triggerEffectRigid(180);
     try std.testing.expectEqual(@intFromEnum(EffectMode.rigid), rigid[0]);
     try std.testing.expectEqual(0, rigid[1]);
     try std.testing.expectEqual(180, rigid[2]);
 
-    const vibrate = effectVibrate(20, 130);
+    const vibrate = triggerEffectVibrate(20, 130);
     try std.testing.expectEqual(@intFromEnum(EffectMode.vibrate), vibrate[0]);
     try std.testing.expectEqual(20, vibrate[1]);
     try std.testing.expectEqual(130, vibrate[2]);
 
     // top 2 zones maxed -> active = 0x0300
-    const zones = effectRigidZones(.{ 0, 0, 0, 0, 0, 0, 0, 0, 8, 8 });
+    const zones = triggerEffectRigidZones(.{ 0, 0, 0, 0, 0, 0, 0, 0, 8, 8 });
     try std.testing.expectEqual(@intFromEnum(EffectMode.rigid_zones), zones[0]);
     try std.testing.expectEqual(0x00, zones[1]); // active mask low byte
     try std.testing.expectEqual(0x03, zones[2]); // active mask high byte
@@ -269,7 +269,7 @@ test "trigger effect encodings" {
     try std.testing.expectEqual(0x3F, zones[6]); // packed bits 24-29 (zones 8-9)
 
     // all zones maxed -> 30-bit packed field all ones, freq at byte 9
-    const all = effectVibrateZones(.{ 8, 8, 8, 8, 8, 8, 8, 8, 8, 8 }, 20);
+    const all = triggerEffectVibrateZones(.{ 8, 8, 8, 8, 8, 8, 8, 8, 8, 8 }, 20);
     try std.testing.expectEqual(@intFromEnum(EffectMode.vibrate_zones), all[0]);
     try std.testing.expectEqual(0xFF, all[1]);
     try std.testing.expectEqual(0x03, all[2]);
@@ -279,6 +279,6 @@ test "trigger effect encodings" {
     try std.testing.expectEqual(0x3F, all[6]);
     try std.testing.expectEqual(20, all[9]);
 
-    const clamped = effectRigidZones(.{ 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 });
+    const clamped = triggerEffectRigidZones(.{ 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 });
     try std.testing.expectEqual(0x3F, clamped[6]);
 }
