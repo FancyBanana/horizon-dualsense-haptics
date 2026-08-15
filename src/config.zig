@@ -20,6 +20,49 @@ pub const MotorMode = enum {
     }
 };
 
+/// Telemetry -> DualSense mapping tunables.
+pub const Params = struct {
+    // L2 (brake)
+    brake_deadzone: u8 = 40,
+    brake_zone_max: u8 = 8, // top zone resistance (1..8) at full brake
+    handbrake_force: u8 = 220,
+    abs_brake_threshold: u8 = 100,
+    abs_slip_ratio_threshold: f32 = 0.3,
+    abs_combined_slip_threshold: f32 = 0.7,
+    abs_freq: u8 = 12,
+    abs_amp: u8 = 160,
+
+    // R2 (throttle)
+    throttle_deadzone: u8 = 30,
+    throttle_max_force: u8 = 160,
+    wheelspin_accel_threshold: u8 = 30,
+    wheelspin_freq_min: u8 = 60,
+    wheelspin_freq_max: u8 = 160,
+    wheelspin_amp: u8 = 180,
+    wheelspin_slip_threshold: f32 = 1.0,
+    burnout_rot_threshold: f32 = 30.0, // rad/s at standstill
+    rev_limit_ratio: f32 = 0.96,
+    rev_limit_freq: u8 = 110,
+    rev_limit_amp: u8 = 150,
+    wheelspin_zone_start: u8 = 5,
+    rev_limit_zone_start: u8 = 8,
+
+    // shared
+    shift_burst_freq: u8 = 20,
+    shift_burst_amp: u8 = 130,
+    shift_burst_ms: i64 = 80,
+    low_speed_mps: f32 = 5.0, // below this trust wheel rotation, not slip
+};
+
+/// Static configuration; runtime state lives in `Haptics`.
+pub const HapticsConfig = struct {
+    params: Params = .{},
+    motor_mode: MotorMode = .simple,
+    reconnect_interval_ms: i64 = 1_000,
+    lightbar_enabled: bool = false,
+    leds_enabled: bool = false,
+};
+
 /// Settings loaded from the config file plus command-line overrides.
 pub const Config = struct {
     mode: MotorMode = .audio,

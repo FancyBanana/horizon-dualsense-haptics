@@ -12,9 +12,9 @@
 const std = @import("std");
 const sdl = @import("sdl_c.zig");
 const c = sdl.c;
-const platform = @import("platform.zig");
+const platform = @import("hardware/platform.zig");
 const config = @import("config.zig");
-const audio_device = @import("audio_device.zig");
+const audio_device = @import("hardware/audio_device.zig");
 
 const print = std.debug.print;
 

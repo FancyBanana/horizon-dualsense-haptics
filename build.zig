@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_sdl_tests.step);
 
     const dualsense_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/dualsense.zig"),
+        .root_source_file = b.path("src/hardware/dualsense.zig"),
         .target = target,
         .optimize = optimize,
     });

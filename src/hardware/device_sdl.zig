@@ -3,7 +3,7 @@
 //! Cross-platform DualSense HID access through SDL3 HIDAPI.
 
 const std = @import("std");
-const sdl = @import("sdl_c.zig");
+const sdl = @import("../sdl_c.zig");
 const c = sdl.c;
 const ds = @import("dualsense.zig");
 

@@ -3,7 +3,7 @@
 //! SDL audio-device discovery.
 
 const std = @import("std");
-const sdl = @import("sdl_c.zig");
+const sdl = @import("../sdl_c.zig");
 const c = sdl.c;
 
 /// Finds the playback device whose name contains `sink_name`.
