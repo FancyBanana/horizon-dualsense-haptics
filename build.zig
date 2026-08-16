@@ -17,11 +17,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const sdl_c_mod = b.createModule(.{
+        .root_source_file = b.path("src/sdl_c.zig"),
+    });
+
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    root_mod.addImport("sdl_c", sdl_c_mod);
     wireSdl(root_mod, sdl);
 
     const exe = b.addExecutable(.{
@@ -60,6 +65,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    sdl_test_mod.addImport("sdl_c", sdl_c_mod);
     wireSdl(sdl_test_mod, sdl);
     const sdl_test = b.addTest(.{
         .root_module = sdl_test_mod,
