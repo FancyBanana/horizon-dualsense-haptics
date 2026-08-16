@@ -47,8 +47,9 @@ pub fn resetLeds(cfg: *const config.HapticsConfig, report: *ds.UsbOutputReport) 
     }
 }
 
-/// Gear -> player LED mask. The firmware mirrors `player_leds` around the
-/// center bit, so only 3 independent channels exist; patterns grow with gear.
+/// Gear -> player LED mask. The `player_leds` byte maps directly to the five
+/// indicator LEDs (bit 0 and bit 4 are the outer LEDs, bit 2 is the center).
+/// Patterns grow with gear.
 pub fn gearLedMask(gear: u8) u8 {
     const patterns = [_]u8{
         0b00100, // 1: center

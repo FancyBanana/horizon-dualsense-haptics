@@ -127,17 +127,18 @@ pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation, firmware 2.2
 pub const LIGHTBAR_SETUP_LIGHT_ON: u8 = 0x01;
 pub const LIGHTBAR_SETUP_LIGHT_OUT: u8 = 0x02;
 
-/// Player-indicator LED patterns indexed by player number 0..7.
-/// Bit 0 = right-most LED, bit 4 = left-most LED.
+/// Player-indicator LED patterns indexed by player number 0..5.
+///
+/// Current firmware uses the byte directly: bit 0 and bit 4 are the outer
+/// LEDs, bit 2 is the center LED. Patterns match the Linux hid-playstation
+/// mapping.
 pub const PLAYER_LED_PATTERNS = [_]u8{
     0x00, // 0 = off
-    0x04, // 1
-    0x0A, // 2
-    0x15, // 3
-    0x1B, // 4
-    0x1F, // 5
-    0x11, // 6 (left + right only)
-    0x0E, // 7 (center three)
+    0x04, // 1: center
+    0x0A, // 2: inner pair
+    0x15, // 3: center + outer pair
+    0x1B, // 4: inner + outer pair
+    0x1F, // 5: all
 };
 
 /// Mute-button LED modes (mic_light_mode / mute_button_led).
