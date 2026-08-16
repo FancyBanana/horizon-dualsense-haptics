@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Audio-based DualSense haptics via SDL3. The controller's voice-coil
-//! actuators are driven by its 4-channel USB audio stream at 48 kHz/16-bit:
-//! FL/FR = speakers, RL/RR = haptic motors. This module streams synthesized
-//! PCM; callers publish per-channel intensity and frequency.
+//! Audio-based DualSense haptics via SDL3.
 //!
-//! Per-channel pipeline: gamma low-boost -> attack/release envelope ->
-//! freshness envelope -> textured harmonic oscillator. The freshness envelope
-//! fades to silence shortly after the last published intensity.
+//! The controller's voice-coil actuators are driven by its USB audio stream
+//! (4 channels at 48 kHz / 16-bit). The DualSense exposes itself as a 4-channel
+//! device where the front channels are the built-in speaker and the *rear*
+//! channels are the haptic motors: FL=left speaker, FR=right speaker,
+//! RL=left haptic, RR=right haptic. This module streams synthesized PCM to the
+//! controller over SDL3 audio (PipeWire/ALSA on Linux, WASAPI on Windows), so
+//! the telemetry loop only has to publish per-channel intensities and the
+//! renderer produces the waveform.
+//!
+//! Rendering pipeline per channel: clamp -> gamma low-boost -> attack/release
+//! envelope -> textured harmonic oscillator -> clamp.
 
 const std = @import("std");
 const sdl = @import("sdl_c");
 const c = sdl.c;
-const platform = @import("hardware/platform.zig");
 const config = @import("config.zig");
 const audio_device = @import("hardware/audio_device.zig");
 
@@ -23,14 +27,11 @@ const CHANNELS: u32 = 4;
 const SAMPLE_BYTES: u32 = 2; // S16LE
 const FRAME_BYTES: u32 = CHANNELS * SAMPLE_BYTES;
 
-/// Fade to silence this long after the last published intensity.
-const FRESH_TIMEOUT_MS: i64 = 250;
-
+// Synthesis pipeline constants.
 const GAMMA: f32 = 2.2; // perceptual low-boost: output = input^(1/GAMMA)
 const ATTACK_COEFF: f32 = 0.02; // amp attack (~1 ms time constant)
 const RELEASE_COEFF: f32 = 0.004; // amp release (~5 ms)
 const FREQ_COEFF: f32 = 0.008; // oscillator frequency smoothing (~2.6 ms)
-const FRESH_COEFF: f32 = 0.002; // freshness envelope (~10 ms)
 const HARMONICS = [_]f32{ 1.0, 0.35, 0.12 }; // fundamental, 2nd, 3rd harmonic
 
 /// Per-channel render state, touched only by the SDL audio thread.
@@ -62,10 +63,6 @@ pub const AudioHaptics = struct {
     chan_l: ChanState = .{},
     chan_r: ChanState = .{},
     noise_state: u32 = 0x9E3779B9,
-    fresh_env: f32 = 0,
-
-    /// Drives the freshness timeout.
-    last_update: std.atomic.Value(i64) = std.atomic.Value(i64).init(-1_000_000),
 
     /// >= 0: emit a fixed test tone on this channel only (0=FL..3=RR).
     test_channel: std.atomic.Value(i32) = std.atomic.Value(i32).init(-1),
@@ -105,7 +102,6 @@ pub const AudioHaptics = struct {
             self.stream = null;
             return false;
         }
-        self.last_update.store(nowMillis(self.io), .monotonic);
         return true;
     }
 
@@ -124,19 +120,16 @@ pub const AudioHaptics = struct {
     pub fn setIntensity(self: *AudioHaptics, l: f32, r: f32) void {
         self.l_amp.store(std.math.clamp(finiteOrZero(l), 0, 1), .monotonic);
         self.r_amp.store(std.math.clamp(finiteOrZero(r), 0, 1), .monotonic);
-        self.last_update.store(nowMillis(self.io), .monotonic);
     }
 
     /// Publishes target frequencies in Hz.
     pub fn setFrequency(self: *AudioHaptics, l: f32, r: f32) void {
         self.l_freq.store(finiteOrZero(l), .monotonic);
         self.r_freq.store(finiteOrZero(r), .monotonic);
-        self.last_update.store(nowMillis(self.io), .monotonic);
     }
 
     pub fn setActive(self: *AudioHaptics, on: bool) void {
         self.active.store(on, .monotonic);
-        if (on) self.last_update.store(nowMillis(self.io), .monotonic);
     }
 
     /// Fixed test tone on one channel (0..3), or -1 for normal rendering.
@@ -156,18 +149,9 @@ pub const AudioHaptics = struct {
         const r_freq = self.r_freq.load(.monotonic);
         const test_channel = self.test_channel.load(.monotonic);
 
-        // Freshness target: fade out when telemetry stops publishing.
-        // (Checked once per buffer; the ~250 ms granularity doesn't need more.)
-        const elapsed_ms = nowMillis(self.io) - self.last_update.load(.monotonic);
-        const fresh_target: f32 = if (elapsed_ms < FRESH_TIMEOUT_MS) 1.0 else 0.0;
-
         var i: usize = 0;
         const dst: [*]i16 = @ptrCast(@alignCast(buf.ptr));
         while (i < n_frames) : (i += 1) {
-            // Per-sample smoothing, same cadence as the envelopes in renderChannel.
-            self.fresh_env += FRESH_COEFF * (fresh_target - self.fresh_env);
-            const fresh = self.fresh_env;
-
             var v: [4]i16 = .{ 0, 0, 0, 0 };
             if (test_channel >= 0) {
                 const chan: usize = @intCast(@min(test_channel, 3));
@@ -176,8 +160,8 @@ pub const AudioHaptics = struct {
                 // Zero targets keep envelopes decaying, not clicking off.
                 const l_eff = if (active) l_amp else 0;
                 const r_eff = if (active) r_amp else 0;
-                v[2] = @intFromFloat(renderChannel(self, &self.chan_l, l_eff, l_freq, fresh) * 32767.0 * self.gain);
-                v[3] = @intFromFloat(renderChannel(self, &self.chan_r, r_eff, r_freq, fresh) * 32767.0 * self.gain);
+                v[2] = @intFromFloat(renderChannel(self, &self.chan_l, l_eff, l_freq) * 32767.0 * self.gain);
+                v[3] = @intFromFloat(renderChannel(self, &self.chan_r, r_eff, r_freq) * 32767.0 * self.gain);
             }
             dst[i * 4 + 0] = v[0]; // FL: left speaker, muted
             dst[i * 4 + 1] = v[1]; // FR: right speaker, muted
@@ -212,9 +196,12 @@ fn testTone(phase: *f32) i16 {
     return @intFromFloat(@sin(phase.*) * 20000.0);
 }
 
-/// One sample of the per-channel pipeline; returns -1..1.
-fn renderChannel(self: *AudioHaptics, ch: *ChanState, amp_target: f32, freq_target: f32, fresh: f32) f32 {
-    // Gamma curve boosts low intensities so weak vibration stays perceptible.
+/// One sample of the haptic render pipeline: clamp -> gamma low-boost ->
+/// attack/release envelope -> textured harmonic oscillator -> clamp. Returns
+/// -1..1.
+fn renderChannel(self: *AudioHaptics, ch: *ChanState, amp_target: f32, freq_target: f32) f32 {
+    // Amp chain: clamp to [0,1], then a gamma curve that boosts low
+    // intensities so weak road vibration stays perceptible.
     const a = std.math.clamp(finiteOrZero(amp_target), 0, 1);
     const boosted = std.math.pow(f32, a, 1.0 / GAMMA);
     ch.amp += (if (boosted > ch.amp) ATTACK_COEFF else RELEASE_COEFF) * (boosted - ch.amp);
@@ -244,14 +231,11 @@ fn renderChannel(self: *AudioHaptics, ch: *ChanState, amp_target: f32, freq_targ
     }
     const tone_norm = tone / (HARMONICS[0] + HARMONICS[1] + HARMONICS[2]);
 
-    const s = (0.55 * ch.lp + 0.45 * tone_norm) * ch.amp * fresh;
+    const s = (0.55 * ch.lp + 0.45 * tone_norm) * ch.amp;
     return std.math.clamp(s, -1, 1);
 }
 
-fn nowMillis(io: std.Io) i64 {
-    return platform.nowMillis(io);
-}
-
+/// Returns SDL's current error message or a fallback string.
 fn sdlError() []const u8 {
     return if (c.SDL_GetError()) |p| std.mem.span(p) else "unknown SDL error";
 }

@@ -61,8 +61,12 @@ pub const Haptics = struct {
         return report;
     }
 
-    /// Report releasing triggers, motors, and LEDs.
-    fn resetReport(self: *const Haptics) ds.UsbOutputReport {
+    /// Report releasing triggers, motors, and LEDs. Also cancels any pending
+    /// gear-shift trigger burst so triggers stay off while paused.
+    fn resetReport(self: *Haptics) ds.UsbOutputReport {
+        self.trigger_state.shift_until_ms = 0;
+        self.trigger_state.prev_gear = null;
+
         var report: ds.UsbOutputReport = .{};
         voicecoil.configureAudioReport(self.config.motor_mode, &report);
         report.common.right_trigger_effect = ds.triggerEffectOff();
