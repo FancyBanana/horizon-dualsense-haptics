@@ -23,6 +23,9 @@ pub fn configureAudioReport(motor_mode: config.MotorMode, report: *ds.UsbOutputR
     // Same flags the kernel driver uses for speaker + voice-coil routing.
     report.common.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
     report.common.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
+    // Rumble-v2 only applies to classic rumble emulation; leave it clear for
+    // the audio-haptics path.
+    report.common.valid_flag2 = 0;
     report.common.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
     report.common.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
     report.common.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
