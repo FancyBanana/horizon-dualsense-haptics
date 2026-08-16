@@ -44,7 +44,7 @@ test "simple mode enables classic rumble flags" {
 
     var report: ds.UsbOutputReport = .{};
     updateMotors(.simple, &frame, &report);
-    try std.testing.expectEqual(ds.Flag0.ALL, report.common.valid_flag0);
+    try std.testing.expectEqual(ds.Flag0.RUMBLE_AND_TRIGGERS, report.common.valid_flag0);
     try std.testing.expectEqual(@as(u8, 0), report.common.valid_flag1);
     try std.testing.expect(report.common.motor_left > report.common.motor_right);
     try std.testing.expect(report.common.motor_right > 0);

@@ -77,7 +77,8 @@ pub const Flag0 = struct {
     pub const MIC_VOLUME: u8 = 0x40;
     pub const APPLY_AUDIO_CONTROL: u8 = 0x80;
 
-    pub const ALL: u8 = RUMBLE | RIGHT_TRIGGER | LEFT_TRIGGER;
+    /// Default simple-mode flags: classic rumble motors plus adaptive triggers.
+    pub const RUMBLE_AND_TRIGGERS: u8 = RUMBLE | RIGHT_TRIGGER | LEFT_TRIGGER;
 
     /// Bits for the USB audio-haptics path: adaptive triggers plus all audio
     /// bytes. Rumble bits are intentionally excluded.
@@ -160,7 +161,7 @@ pub const MuteLedMode = enum(u8) {
 /// The 47-byte payload that is shared between USB and Bluetooth output reports.
 /// This is the authoritative layout used by `dualsensectl` and SDL.
 pub const OutputReportCommon = extern struct {
-    valid_flag0: u8 = Flag0.ALL,
+    valid_flag0: u8 = Flag0.RUMBLE_AND_TRIGGERS,
     valid_flag1: u8 = 0,
     motor_right: u8 = 0,
     motor_left: u8 = 0,
