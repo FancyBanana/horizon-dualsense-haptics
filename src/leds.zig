@@ -8,7 +8,7 @@ const ds = @import("hardware/dualsense.zig");
 const config = @import("config.zig");
 
 /// RPM -> green-to-red lightbar, gear -> player LEDs.
-pub fn updateLeds(cfg: *const config.HapticsConfig, frame: *const parser.HorizonFrame, report: *ds.OutputReport) void {
+pub fn updateLeds(cfg: *const config.HapticsConfig, frame: *const parser.HorizonFrame, report: *ds.UsbOutputReport) void {
     if (!cfg.lightbar_enabled and !cfg.leds_enabled) return;
 
     if (cfg.lightbar_enabled) {
@@ -17,33 +17,33 @@ pub fn updateLeds(cfg: *const config.HapticsConfig, frame: *const parser.Horizon
         else
             0;
 
-        report.valid_flag1 |= ds.Flag1.LIGHTBAR_CONTROL_ENABLE;
-        report.led_red = @intFromFloat(rpm_ratio * 255.0);
-        report.led_green = @intFromFloat((1.0 - rpm_ratio) * 255.0);
-        report.led_blue = 0;
+        report.common.valid_flag1 |= ds.Flag1.LIGHTBAR_CONTROL_ENABLE;
+        report.common.led_red = @intFromFloat(rpm_ratio * 255.0);
+        report.common.led_green = @intFromFloat((1.0 - rpm_ratio) * 255.0);
+        report.common.led_blue = 0;
     }
 
     if (cfg.leds_enabled) {
-        report.valid_flag1 |= ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
-        report.led_brightness = 255;
-        report.player_leds = gearLedMask(frame.Gear);
+        report.common.valid_flag1 |= ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
+        report.common.led_brightness = 255;
+        report.common.player_leds = gearLedMask(frame.Gear);
     }
 }
 
 /// Reset LEDs to off state.
-pub fn resetLeds(cfg: *const config.HapticsConfig, report: *ds.OutputReport) void {
+pub fn resetLeds(cfg: *const config.HapticsConfig, report: *ds.UsbOutputReport) void {
     if (cfg.lightbar_enabled) {
-        report.valid_flag1 |= ds.Flag1.LIGHTBAR_CONTROL_ENABLE;
-        report.valid_flag2 |= ds.FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE;
-        report.lightbar_setup = ds.LIGHTBAR_SETUP_LIGHT_OUT;
-        report.led_red = 0;
-        report.led_green = 0;
-        report.led_blue = 0;
+        report.common.valid_flag1 |= ds.Flag1.LIGHTBAR_CONTROL_ENABLE;
+        report.common.valid_flag2 |= ds.FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE;
+        report.common.lightbar_setup = ds.LIGHTBAR_SETUP_LIGHT_OUT;
+        report.common.led_red = 0;
+        report.common.led_green = 0;
+        report.common.led_blue = 0;
     }
     if (cfg.leds_enabled) {
-        report.valid_flag1 |= ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
-        report.led_brightness = 0;
-        report.player_leds = 0;
+        report.common.valid_flag1 |= ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
+        report.common.led_brightness = 0;
+        report.common.player_leds = 0;
     }
 }
 
@@ -78,19 +78,19 @@ test "lightbar follows rpm and gear LEDs" {
     frame.CurrentEngineRpm = 0;
     frame.Gear = 1;
 
-    var report: ds.OutputReport = .{};
+    var report: ds.UsbOutputReport = .{};
     updateLeds(&cfg, &frame, &report);
-    try std.testing.expectEqual(@as(u8, 0), report.led_red);
-    try std.testing.expectEqual(@as(u8, 255), report.led_green);
-    try std.testing.expectEqual(@as(u8, 0x04), report.player_leds);
+    try std.testing.expectEqual(@as(u8, 0), report.common.led_red);
+    try std.testing.expectEqual(@as(u8, 255), report.common.led_green);
+    try std.testing.expectEqual(@as(u8, 0x04), report.common.player_leds);
 
     frame.CurrentEngineRpm = 8000;
     frame.Gear = 7;
     report = .{};
     updateLeds(&cfg, &frame, &report);
-    try std.testing.expectEqual(@as(u8, 255), report.led_red);
-    try std.testing.expectEqual(@as(u8, 0), report.led_green);
-    try std.testing.expectEqual(@as(u8, 0x1F), report.player_leds);
+    try std.testing.expectEqual(@as(u8, 255), report.common.led_red);
+    try std.testing.expectEqual(@as(u8, 0), report.common.led_green);
+    try std.testing.expectEqual(@as(u8, 0x1F), report.common.player_leds);
 }
 
 test "gear LEDs use symmetric mirror-compatible patterns" {

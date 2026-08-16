@@ -3,7 +3,7 @@
 //! Cross-platform DualSense HID access through SDL3 HIDAPI.
 
 const std = @import("std");
-const sdl = @import("../sdl_c.zig");
+const sdl = @import("sdl_c");
 const c = sdl.c;
 const ds = @import("dualsense.zig");
 
@@ -55,7 +55,7 @@ pub const Device = struct {
     }
 
     /// Writes a USB report directly or wraps it in a Bluetooth report.
-    pub fn writeReport(self: *Device, report: *const ds.OutputReport) Error!void {
+    pub fn writeReport(self: *Device, report: *const ds.UsbOutputReport) Error!void {
         const handle = self.handle orelse return error.DeviceNotFound;
         switch (self.bus) {
             .usb => return self.writeBytes(handle, std.mem.asBytes(report)),

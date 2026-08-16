@@ -10,7 +10,7 @@
 //! fades to silence shortly after the last published intensity.
 
 const std = @import("std");
-const sdl = @import("sdl_c.zig");
+const sdl = @import("sdl_c");
 const c = sdl.c;
 const platform = @import("hardware/platform.zig");
 const config = @import("config.zig");

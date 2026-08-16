@@ -8,14 +8,14 @@ const ds = @import("hardware/dualsense.zig");
 const config = @import("config.zig");
 
 /// Surface rumble -> classic motor bytes (simple mode only).
-pub fn updateMotors(motor_mode: config.MotorMode, frame: *const parser.HorizonFrame, report: *ds.OutputReport) void {
+pub fn updateMotors(motor_mode: config.MotorMode, frame: *const parser.HorizonFrame, report: *ds.UsbOutputReport) void {
     // SurfaceRumble is a 0..1 per-wheel force.
     const l = max2(frame.SurfaceRumbleFl, frame.SurfaceRumbleRl);
     const r = max2(frame.SurfaceRumbleFr, frame.SurfaceRumbleRr);
     switch (motor_mode) {
         .simple => {
-            report.motor_right = scaleMotor(r);
-            report.motor_left = scaleMotor(l);
+            report.common.motor_right = scaleMotor(r);
+            report.common.motor_left = scaleMotor(l);
         },
         // Audio mode drives the actuators via the audio stream instead.
         .audio => {},
@@ -42,10 +42,10 @@ test "simple mode enables classic rumble flags" {
     frame.SurfaceRumbleFl = 1.0;
     frame.SurfaceRumbleFr = 0.5;
 
-    var report: ds.OutputReport = .{};
+    var report: ds.UsbOutputReport = .{};
     updateMotors(.simple, &frame, &report);
-    try std.testing.expectEqual(ds.Flag0.ALL, report.valid_flag0);
-    try std.testing.expectEqual(@as(u8, 0), report.valid_flag1);
-    try std.testing.expect(report.motor_left > report.motor_right);
-    try std.testing.expect(report.motor_right > 0);
+    try std.testing.expectEqual(ds.Flag0.ALL, report.common.valid_flag0);
+    try std.testing.expectEqual(@as(u8, 0), report.common.valid_flag1);
+    try std.testing.expect(report.common.motor_left > report.common.motor_right);
+    try std.testing.expect(report.common.motor_right > 0);
 }

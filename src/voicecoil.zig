@@ -17,15 +17,15 @@ pub const AudioCue = struct {
 };
 
 /// Sets the flags that route haptics through USB audio.
-pub fn configureAudioReport(motor_mode: config.MotorMode, report: *ds.OutputReport) void {
+pub fn configureAudioReport(motor_mode: config.MotorMode, report: *ds.UsbOutputReport) void {
     if (motor_mode != .audio) return;
 
     // Same flags the kernel driver uses for speaker + voice-coil routing.
-    report.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
-    report.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
-    report.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
-    report.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
-    report.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
+    report.common.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
+    report.common.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
+    report.common.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
+    report.common.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
+    report.common.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
 }
 
 /// Publishes per-side audio cues; called even while HID is disconnected.

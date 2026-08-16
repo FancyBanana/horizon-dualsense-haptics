@@ -42,10 +42,10 @@ pub const Haptics = struct {
     }
 
     /// Pure telemetry -> report mapping, no hardware; used by the tests.
-    pub fn buildReport(self: *Haptics, io: Io, frame: *const parser.HorizonFrame) ds.OutputReport {
+    pub fn buildReport(self: *Haptics, io: Io, frame: *const parser.HorizonFrame) ds.UsbOutputReport {
         if (frame.IsRaceOn == 0) return self.resetReport();
 
-        var report: ds.OutputReport = .{};
+        var report: ds.UsbOutputReport = .{};
 
         rumble.updateMotors(self.config.motor_mode, frame, &report);
 
@@ -54,19 +54,19 @@ pub const Haptics = struct {
         const now_ms = nowMillis(io);
         self.trigger_state.config_params_shift_burst_ms = self.config.params.shift_burst_ms;
         self.trigger_state.updateGearShift(frame, now_ms);
-        report.right_trigger_effect = self.trigger_state.rightTrigger(&self.config.params, frame, now_ms);
-        report.left_trigger_effect = self.trigger_state.leftTrigger(&self.config.params, frame, now_ms);
+        report.common.right_trigger_effect = self.trigger_state.rightTrigger(&self.config.params, frame, now_ms);
+        report.common.left_trigger_effect = self.trigger_state.leftTrigger(&self.config.params, frame, now_ms);
         leds.updateLeds(&self.config, frame, &report);
 
         return report;
     }
 
     /// Report releasing triggers, motors, and LEDs.
-    fn resetReport(self: *const Haptics) ds.OutputReport {
-        var report: ds.OutputReport = .{};
+    fn resetReport(self: *const Haptics) ds.UsbOutputReport {
+        var report: ds.UsbOutputReport = .{};
         voicecoil.configureAudioReport(self.config.motor_mode, &report);
-        report.right_trigger_effect = ds.triggerEffectOff();
-        report.left_trigger_effect = ds.triggerEffectOff();
+        report.common.right_trigger_effect = ds.triggerEffectOff();
+        report.common.left_trigger_effect = ds.triggerEffectOff();
         leds.resetLeds(&self.config, &report);
         return report;
     }
@@ -129,16 +129,16 @@ test "replay all captured packets through the mapping" {
         const frame = parser.parseHorizonPacket(buf);
         const report = hap.buildReport(std.testing.io, &frame);
 
-        try std.testing.expectEqual(ds.Flag0.AUDIO_HAPTICS, report.valid_flag0);
+        try std.testing.expectEqual(ds.Flag0.AUDIO_HAPTICS, report.common.valid_flag0);
         try std.testing.expectEqual(
             ds.Flag1.AUDIO_CONTROL2_ENABLE |
                 ds.Flag1.LIGHTBAR_CONTROL_ENABLE |
                 ds.Flag1.PLAYER_INDICATOR_CONTROL_ENABLE,
-            report.valid_flag1,
+            report.common.valid_flag1,
         );
-        try std.testing.expectEqual(ds.Audio.PATH_SEL_INTERNAL_SPEAKER, report.audio_enable_bits);
-        try std.testing.expectEqual(ds.Audio.SPEAKER_VOLUME_MAX, report.speaker_volume);
-        try std.testing.expectEqual(ds.Audio.SP_PREAMP_GAIN_6DB, report.audio_control2);
+        try std.testing.expectEqual(ds.Audio.PATH_SEL_INTERNAL_SPEAKER, report.common.audio_enable_bits);
+        try std.testing.expectEqual(ds.Audio.SPEAKER_VOLUME_MAX, report.common.speaker_volume);
+        try std.testing.expectEqual(ds.Audio.SP_PREAMP_GAIN_6DB, report.common.audio_control2);
 
         const valid_modes = [_]u8{
             @intFromEnum(ds.EffectMode.reset),
@@ -147,14 +147,14 @@ test "replay all captured packets through the mapping" {
             @intFromEnum(ds.EffectMode.rigid_zones),
             @intFromEnum(ds.EffectMode.vibrate_zones),
         };
-        try std.testing.expect(std.mem.indexOfScalar(u8, &valid_modes, report.right_trigger_effect[0]) != null);
-        try std.testing.expect(std.mem.indexOfScalar(u8, &valid_modes, report.left_trigger_effect[0]) != null);
+        try std.testing.expect(std.mem.indexOfScalar(u8, &valid_modes, report.common.right_trigger_effect[0]) != null);
+        try std.testing.expect(std.mem.indexOfScalar(u8, &valid_modes, report.common.left_trigger_effect[0]) != null);
 
         if (frame.IsRaceOn == 0) {
             saw_out_of_race = true;
             // out of race: triggers released
-            try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.right_trigger_effect[0]);
-            try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.left_trigger_effect[0]);
+            try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.common.right_trigger_effect[0]);
+            try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.common.left_trigger_effect[0]);
         } else {
             saw_racing = true;
             if (frame.Brake > 0) saw_braking = true;
@@ -177,13 +177,13 @@ test "out-of-race report resets all effects" {
     frame.Gear = 10;
 
     const report = hap.buildReport(std.testing.io, &frame);
-    try std.testing.expectEqual(@as(u8, 0), report.motor_left);
-    try std.testing.expectEqual(@as(u8, 0), report.motor_right);
-    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.left_trigger_effect[0]);
-    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.right_trigger_effect[0]);
-    try std.testing.expectEqual(@as(u8, 0), report.led_brightness);
-    try std.testing.expectEqual(@as(u8, 0), report.player_leds);
-    try std.testing.expectEqual(@as(u8, 0), report.led_red);
-    try std.testing.expectEqual(@as(u8, 0), report.led_green);
-    try std.testing.expectEqual(@as(u8, 0), report.led_blue);
+    try std.testing.expectEqual(@as(u8, 0), report.common.motor_left);
+    try std.testing.expectEqual(@as(u8, 0), report.common.motor_right);
+    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.common.left_trigger_effect[0]);
+    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.reset), report.common.right_trigger_effect[0]);
+    try std.testing.expectEqual(@as(u8, 0), report.common.led_brightness);
+    try std.testing.expectEqual(@as(u8, 0), report.common.player_leds);
+    try std.testing.expectEqual(@as(u8, 0), report.common.led_red);
+    try std.testing.expectEqual(@as(u8, 0), report.common.led_green);
+    try std.testing.expectEqual(@as(u8, 0), report.common.led_blue);
 }
