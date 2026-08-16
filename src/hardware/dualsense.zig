@@ -59,25 +59,30 @@ pub const FEATURE_CRC_SEED: u8 = 0xA3;
 // ---------------------------------------------------------------------------
 
 /// valid_flag0 (byte 1 of the common output payload).
-///
-/// Bit 0/1 select the rumble path.  Classic rumble uses both bits; haptic
-/// audio uses the trigger/audio bits and keeps the rumble bits clear.
 pub const Flag0 = struct {
-    pub const COMPATIBLE_VIBRATION: u8 = 0x01; // classic rumble motors
-    pub const HAPTICS_SELECT: u8 = 0x02; // 0 = classic motors, 1 = voice coils
-    pub const RUMBLE: u8 = COMPATIBLE_VIBRATION | HAPTICS_SELECT;
+    /// Start the classic rumble motors (must be combined with `RUMBLE_CLASSIC`).
+    pub const RUMBLE_ENABLE: u8 = 0x01;
+    /// Select classic rumble emulation. Combined with `RUMBLE_ENABLE` this
+    /// enables the rumble bytes and silences the voice-coil actuators.
+    pub const RUMBLE_CLASSIC: u8 = 0x02;
+    pub const RUMBLE: u8 = RUMBLE_ENABLE | RUMBLE_CLASSIC;
+
     pub const RIGHT_TRIGGER: u8 = 0x04;
     pub const LEFT_TRIGGER: u8 = 0x08;
+
+    /// Audio-volume and audio-control enable bits. Each applies the matching
+    /// byte in the common output report.
     pub const HEADPHONE_VOLUME: u8 = 0x10;
     pub const SPEAKER_VOLUME: u8 = 0x20;
     pub const MIC_VOLUME: u8 = 0x40;
-    pub const AUDIO_CONTROL: u8 = 0x80;
+    pub const APPLY_AUDIO_CONTROL: u8 = 0x80;
 
     pub const ALL: u8 = RUMBLE | RIGHT_TRIGGER | LEFT_TRIGGER;
-    /// Native audio-haptics: triggers + audio control, no rumble bits.
-    /// Rumble bits switch to classic emulation and silence the voice coils.
-    pub const AUDIO_HAPTICS: u8 = RIGHT_TRIGGER | LEFT_TRIGGER | HEADPHONE_VOLUME |
-        SPEAKER_VOLUME | MIC_VOLUME | AUDIO_CONTROL;
+
+    /// Bits for the USB audio-haptics path: adaptive triggers plus all audio
+    /// bytes. Rumble bits are intentionally excluded.
+    pub const AUDIO_HAPTICS: u8 = RIGHT_TRIGGER | LEFT_TRIGGER |
+        HEADPHONE_VOLUME | SPEAKER_VOLUME | MIC_VOLUME | APPLY_AUDIO_CONTROL;
 };
 
 /// valid_flag1 (byte 2 of the common output payload).
