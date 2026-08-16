@@ -108,7 +108,9 @@ pub const Haptics = struct {
     }
 
     /// Builds a report that releases triggers, motors, and controller LEDs.
-    fn resetReport(self: *const Haptics) ds.OutputReport {
+    fn resetReport(self: *Haptics) ds.OutputReport {
+        self.shift_until_ms = 0;
+
         var report: ds.OutputReport = .{};
         self.configureAudioReport(&report);
         report.right_trigger_effect = ds.effectOff();
