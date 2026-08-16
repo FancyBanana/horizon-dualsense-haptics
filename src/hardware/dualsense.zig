@@ -69,18 +69,15 @@ pub const Flag0 = struct {
     pub const RIGHT_TRIGGER: u8 = 0x04;
     pub const LEFT_TRIGGER: u8 = 0x08;
     pub const HEADPHONE_VOLUME: u8 = 0x10;
-    pub const AUDIO_VOLUME: u8 = 0x10; // kept for existing callers
     pub const SPEAKER_VOLUME: u8 = 0x20;
-    pub const INTERNAL_SPEAKER: u8 = 0x20; // kept for existing callers
     pub const MIC_VOLUME: u8 = 0x40;
     pub const AUDIO_CONTROL: u8 = 0x80;
-    pub const INTERNAL_MIC: u8 = 0x80; // kept for existing callers
 
     pub const ALL: u8 = RUMBLE | RIGHT_TRIGGER | LEFT_TRIGGER;
     /// Native audio-haptics: triggers + audio control, no rumble bits.
     /// Rumble bits switch to classic emulation and silence the voice coils.
-    pub const AUDIO_HAPTICS: u8 = RIGHT_TRIGGER | LEFT_TRIGGER | AUDIO_VOLUME |
-        INTERNAL_SPEAKER | MIC_VOLUME | INTERNAL_MIC;
+    pub const AUDIO_HAPTICS: u8 = RIGHT_TRIGGER | LEFT_TRIGGER | HEADPHONE_VOLUME |
+        SPEAKER_VOLUME | MIC_VOLUME | AUDIO_CONTROL;
 };
 
 /// valid_flag1 (byte 2 of the common output payload).
@@ -101,14 +98,7 @@ pub const Audio = struct {
     pub const SPEAKER_VOLUME_MAX: u8 = 0x64;
     pub const MIC_VOLUME_MAX: u8 = 0x40;
 
-    /// Byte 8: output path selection bits (bits 4-5).
-    pub const OUTPUT_PATH_SHIFT = 4;
-    pub const OUTPUT_PATH_MASK: u8 = 0x30;
-    /// Byte 8: input path selection bits (bits 6-7).
-    pub const INPUT_PATH_SHIFT = 6;
-    pub const INPUT_PATH_MASK: u8 = 0xC0;
-
-    /// Byte 8: un-mute internal speaker (OUTPUT_PATH_SEL = 3) and route
+    /// Byte 8: un-mute internal speaker (output path sel = 3) and route
     /// RL/RR to the haptic actuators.
     pub const PATH_SEL_INTERNAL_SPEAKER: u8 = 0x30;
 
@@ -220,20 +210,16 @@ pub const BtOutputReport = extern struct {
     reserved: [24]u8 = [_]u8{0} ** 24,
     crc: [4]u8 = [_]u8{0} ** 4,
 
-    pub fn fromCommon(common_report: *const OutputReportCommon, sequence: u8) BtOutputReport {
+    pub fn fromUsb(report: *const UsbOutputReport, sequence: u8) BtOutputReport {
         var bt: BtOutputReport = .{ .sequence = (sequence & 0x0F) << 4 };
-        @memcpy(&bt.common, std.mem.asBytes(common_report));
+        @memcpy(&bt.common, std.mem.asBytes(&report.common));
 
-        const checksum = bluetoothCrc(std.mem.asBytes(&bt)[0..74]);
+        const checksum = crc32Le(BT_CRC_SEED, std.mem.asBytes(&bt)[0..74]);
         bt.crc[0] = @truncate(checksum);
         bt.crc[1] = @truncate(checksum >> 8);
         bt.crc[2] = @truncate(checksum >> 16);
         bt.crc[3] = @truncate(checksum >> 24);
         return bt;
-    }
-
-    pub fn fromUsb(report: *const UsbOutputReport, sequence: u8) BtOutputReport {
-        return fromCommon(&report.common, sequence);
     }
 };
 
@@ -254,11 +240,6 @@ fn crc32Le(seed: u8, bytes: []const u8) u32 {
     var crc = crc32LeUpdate(0xFFFFFFFF, &.{seed});
     crc = crc32LeUpdate(crc, bytes);
     return ~crc;
-}
-
-/// Matches the kernel's crc32_le(~0, {0xA2}, 1) seed and final complement.
-fn bluetoothCrc(bytes: []const u8) u32 {
-    return crc32Le(BT_CRC_SEED, bytes);
 }
 
 fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
@@ -670,15 +651,6 @@ pub const InputState = struct {
     mic_mute_led: bool,
 };
 
-fn decodeTouchPoint(contact: u8, x_lo: u8, nibble: u8, y_hi: u8) TouchPoint {
-    return .{
-        .contact = contact,
-        .x_lo = x_lo,
-        .nibble = nibble,
-        .y_hi = y_hi,
-    };
-}
-
 /// Decode the common 63-byte input payload into a high-level state.
 pub fn decodeInput(report: *const InputReportCommon) InputState {
     const b0 = report.buttons0;
@@ -687,8 +659,18 @@ pub fn decodeInput(report: *const InputReportCommon) InputState {
     const hat = b0 & Buttons0.HAT_SWITCH;
     const cap = report.status0 & Status0.BATTERY_CAPACITY;
     const charging = (report.status0 & Status0.CHARGING) >> Status0.CHARGING_SHIFT;
-    const touch0 = decodeTouchPoint(report.touch0_contact, report.touch0_x_lo, report.touch0_nibble, report.touch0_y_hi);
-    const touch1 = decodeTouchPoint(report.touch1_contact, report.touch1_x_lo, report.touch1_nibble, report.touch1_y_hi);
+    const touch0: TouchPoint = .{
+        .contact = report.touch0_contact,
+        .x_lo = report.touch0_x_lo,
+        .nibble = report.touch0_nibble,
+        .y_hi = report.touch0_y_hi,
+    };
+    const touch1: TouchPoint = .{
+        .contact = report.touch1_contact,
+        .x_lo = report.touch1_x_lo,
+        .nibble = report.touch1_nibble,
+        .y_hi = report.touch1_y_hi,
+    };
     const gyro_x = std.mem.readInt(i16, &.{ report.gyro_x_lo, report.gyro_x_hi }, .little);
     const gyro_y = std.mem.readInt(i16, &.{ report.gyro_y_lo, report.gyro_y_hi }, .little);
     const gyro_z = std.mem.readInt(i16, &.{ report.gyro_z_lo, report.gyro_z_hi }, .little);
@@ -832,7 +814,7 @@ test "bluetooth report wraps USB fields and checksum" {
     checksum |= @as(u32, bytes[75]) << 8;
     checksum |= @as(u32, bytes[76]) << 16;
     checksum |= @as(u32, bytes[77]) << 24;
-    try std.testing.expectEqual(checksum, bluetoothCrc(bytes[0..74]));
+    try std.testing.expectEqual(checksum, crc32Le(BT_CRC_SEED, bytes[0..74]));
 }
 
 test "crc32 little-endian known vector" {
