@@ -8,19 +8,13 @@ pub const MAX_DATAGRAM_SIZE: usize = 65507;
 pub const DEFAULT_IP_ADDRESS = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8800;
 
-/// Per-datagram callback; the listener stays game-agnostic.
-pub const Handler = struct {
-    context: *const anyopaque,
-    process: *const fn (ctx: *const anyopaque, data: []const u8) anyerror!void,
-};
-
 /// Listener configuration (set once at `init`).
 pub const Options = struct {
     ip_address: []const u8 = DEFAULT_IP_ADDRESS,
     port: u16 = DEFAULT_PORT,
 };
 
-/// Receives telemetry datagrams and dispatches them to a `Handler`.
+/// Receives telemetry datagrams. Callers poll and process the returned data.
 pub const Listener = struct {
     io: std.Io,
     options: Options = .{},
@@ -46,17 +40,17 @@ pub const Listener = struct {
         self.socket = null;
     }
 
-    /// One receive cycle with a short timeout; dispatches at most one
-    /// datagram. Returns an error on fatal socket failure.
-    pub fn poll(self: *Listener, handler: Handler) !void {
-        const sock = self.socket orelse return;
-        var buf: [MAX_DATAGRAM_SIZE]u8 = undefined;
+    /// One receive cycle with a short timeout. Returns a slice of `buf`
+    /// containing the received datagram, or `null` on timeout. Returns an
+    /// error only on fatal socket failure.
+    pub fn poll(self: *Listener, buf: []u8) !?[]const u8 {
+        const sock = self.socket orelse return null;
         const msg = sock.receiveTimeout(
             self.io,
-            &buf,
+            buf,
             .{ .duration = .{ .raw = .fromMilliseconds(10), .clock = .boot } },
         ) catch |err| switch (err) {
-            error.Timeout => return,
+            error.Timeout => return null,
             // Transient: the socket is still usable.
             error.MessageOversize,
             error.ConnectionResetByPeer,
@@ -64,12 +58,10 @@ pub const Listener = struct {
             error.PortUnreachable,
             => {
                 std.log.warn("listener: transient receive error {s}", .{@errorName(err)});
-                return;
+                return null;
             },
             else => return err,
         };
-        handler.process(handler.context, msg.data) catch |err| {
-            std.log.err("packet handler: {s}", .{@errorName(err)});
-        };
+        return msg.data;
     }
 };

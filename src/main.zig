@@ -22,8 +22,7 @@ const App = struct {
 };
 
 /// Validates and parses one datagram, then updates the haptics.
-fn processFrame(ctx: *const anyopaque, data: []const u8) anyerror!void {
-    const app: *App = @ptrCast(@alignCast(@constCast(ctx)));
+fn processFrame(app: *App, data: []const u8) void {
     if (data.len != parser.PACKET_SIZE) {
         std.log.warn("fh5: wrong datagram size {d} (expected {d})", .{ data.len, parser.PACKET_SIZE });
         return;
@@ -56,14 +55,13 @@ pub fn main(init: std.process.Init) !void {
     try listener.bind(.{ .ip_address = args.ip_address orelse updlstn.DEFAULT_IP_ADDRESS, .port = args.port orelse updlstn.DEFAULT_PORT });
     defer listener.close();
 
-    const handler = updlstn.Handler{ .context = &app, .process = processFrame };
-
     std.debug.print("listening for telemetry on UDP {s}:{d} (Ctrl-C to stop)\n", .{ args.ip_address orelse updlstn.DEFAULT_IP_ADDRESS, args.port orelse updlstn.DEFAULT_PORT });
+
+    var recv_buf: [updlstn.MAX_DATAGRAM_SIZE]u8 = undefined;
     while (!utils.g_stop.load(.acquire)) {
-        listener.poll(handler) catch |err| {
-            std.log.err("listener: {s}", .{@errorName(err)});
-            return err;
-        };
+        if (try listener.poll(&recv_buf)) |data| {
+            processFrame(&app, data);
+        }
     }
     std.debug.print("shutting down\n", .{});
 }
