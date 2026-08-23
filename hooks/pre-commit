@@ -1,0 +1,11 @@
+#!/bin/sh
+# Pre-commit hook: fail commit if `zig build check` fails.
+# Install with: ./hooks/install.sh
+
+echo "Running zig build check..."
+if ! zig build check; then
+    echo ""
+    echo "zig build check failed. Commit aborted." >&2
+    echo "Fix errors or bypass with: git commit --no-verify" >&2
+    exit 1
+fi
