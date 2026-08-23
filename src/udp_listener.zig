@@ -48,7 +48,7 @@ pub const Listener = struct {
         const msg = sock.receiveTimeout(
             self.io,
             buf,
-            .{ .duration = .{ .raw = .fromMilliseconds(10), .clock = .boot } },
+            .{ .duration = .{ .raw = .fromMilliseconds(10), .clock = .awake } },
         ) catch |err| switch (err) {
             error.Timeout => return null,
             // Transient: the socket is still usable.

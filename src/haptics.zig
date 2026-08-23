@@ -7,11 +7,11 @@ const ds = @import("hardware/dualsense.zig");
 const device = @import("hardware/device.zig");
 const audio = @import("audio.zig");
 const config = @import("config.zig");
-const platform = @import("hardware/platform.zig");
 const triggers = @import("triggers.zig");
 const voicecoil = @import("voicecoil.zig");
 const rumble = @import("rumble.zig");
 const leds = @import("leds.zig");
+const clock = @import("hardware/clock.zig");
 
 const print = std.debug.print;
 
@@ -51,7 +51,7 @@ pub const Haptics = struct {
 
         voicecoil.configureAudioReport(self.config.motor_mode, &report);
 
-        const now_ms = nowMillis(io);
+        const now_ms = clock.nowMillis(io);
         self.trigger_state.config_params_shift_burst_ms = self.config.params.shift_burst_ms;
         self.trigger_state.updateGearShift(frame, now_ms);
         report.common.right_trigger_effect = self.trigger_state.rightTrigger(&self.config.params, frame, now_ms);
@@ -90,7 +90,7 @@ pub const Haptics = struct {
     /// Opens the controller lazily, throttling discovery attempts.
     fn ensureConnected(self: *Haptics, io: Io) void {
         if (!self.device.connected()) {
-            const now = nowMillis(io);
+            const now = clock.nowMillis(io);
             if (now - self.last_open_attempt_ms < self.config.reconnect_interval_ms) return;
             self.last_open_attempt_ms = now;
             self.device = device.open(io) catch {
@@ -105,10 +105,6 @@ pub const Haptics = struct {
         }
     }
 };
-
-fn nowMillis(io: std.Io) i64 {
-    return platform.nowMillis(io);
-}
 
 // Offline replay: run every captured packet through the mapping; no DualSense needed.
 test "replay all captured packets through the mapping" {
