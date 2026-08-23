@@ -749,12 +749,6 @@ pub fn decodeInput(report: *const InputReportCommon) InputState {
 }
 
 // ---------------------------------------------------------------------------
-// Errors shared by the platform HID implementations.
-// ---------------------------------------------------------------------------
-
-pub const Error = error{ DeviceNotFound, AccessDenied, WriteFailed, WouldBlock };
-
-// ---------------------------------------------------------------------------
 // Compile-time size checks
 // ---------------------------------------------------------------------------
 

@@ -8,7 +8,7 @@ const c = sdl.c;
 const ds = @import("dualsense.zig");
 
 /// Errors returned by SDL HID discovery and report writes.
-pub const Error = ds.Error;
+pub const Error = error{ DeviceNotFound, AccessDenied, WriteFailed, WouldBlock };
 
 /// SDL HID device handle and DualSense transport state.
 pub const Device = struct {

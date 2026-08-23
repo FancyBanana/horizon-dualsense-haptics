@@ -3,12 +3,11 @@
 //! Portable DualSense HID access through SDL3 HIDAPI.
 
 const std = @import("std");
+const impl = @import("device_sdl.zig");
 const ds = @import("dualsense.zig");
 
 /// Errors returned by the shared SDL HID backend.
-pub const Error = ds.Error;
-
-const impl = @import("device_sdl.zig");
+pub const Error = impl.Error;
 
 pub const Device = impl.Device;
 
