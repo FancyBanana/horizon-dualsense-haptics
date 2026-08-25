@@ -3,7 +3,7 @@
 const std = @import("std");
 const Io = std.Io;
 const parser = @import("fh5_packet_parser.zig");
-const ds = @import("hardware/dualsense.zig");
+const ds = @import("hardware/dualsense-util.zig");
 const device = @import("hardware/device.zig");
 const audio = @import("audio.zig");
 const config = @import("config.zig");
@@ -42,23 +42,27 @@ pub const Haptics = struct {
     }
 
     /// Pure telemetry -> report mapping, no hardware; used by the tests.
+    ///
+    /// Infallible: `motor_mode` selects exactly one actuator path, so the
+    /// builder's rumble-vs-audio conflict is unreachable here; on the (should
+    /// never happen) error we fall back to a safe all-off report.
     pub fn buildReport(self: *Haptics, io: Io, frame: *const parser.HorizonFrame) ds.UsbOutputReport {
         if (frame.IsRaceOn == 0) return self.resetReport();
 
-        var report: ds.UsbOutputReport = .{};
+        var builder: ds.ReportBuilder = .{};
 
-        rumble.updateMotors(self.config.motor_mode, frame, &report);
+        rumble.updateMotors(self.config.motor_mode, frame, &builder);
 
-        voicecoil.configureAudioReport(self.config.motor_mode, &report);
+        voicecoil.configureAudioReport(self.config.motor_mode, &builder);
 
         const now_ms = clock.nowMillis(io);
         self.trigger_state.config_params_shift_burst_ms = self.config.params.shift_burst_ms;
         self.trigger_state.updateGearShift(frame, now_ms);
-        report.common.right_trigger_effect = self.trigger_state.rightTrigger(&self.config.params, frame, now_ms);
-        report.common.left_trigger_effect = self.trigger_state.leftTrigger(&self.config.params, frame, now_ms);
-        leds.updateLeds(&self.config, frame, &report);
+        builder.setRightTriggerEffect(self.trigger_state.rightTrigger(&self.config.params, frame, now_ms));
+        builder.setLeftTriggerEffect(self.trigger_state.leftTrigger(&self.config.params, frame, now_ms));
+        leds.updateLeds(&self.config, frame, &builder);
 
-        return report;
+        return builder.toReport() catch ds.ReportBuilder.offReport();
     }
 
     /// Report releasing triggers, motors, and LEDs. Also cancels any pending
@@ -67,12 +71,12 @@ pub const Haptics = struct {
         self.trigger_state.shift_until_ms = 0;
         self.trigger_state.prev_gear = null;
 
-        var report: ds.UsbOutputReport = .{};
-        voicecoil.configureAudioReport(self.config.motor_mode, &report);
-        report.common.right_trigger_effect = ds.triggerEffectOff();
-        report.common.left_trigger_effect = ds.triggerEffectOff();
-        leds.resetLeds(&self.config, &report);
-        return report;
+        var builder: ds.ReportBuilder = .{};
+        voicecoil.configureAudioReport(self.config.motor_mode, &builder);
+        builder.setRightTriggerEffect(ds.TriggerEffect.off());
+        builder.setLeftTriggerEffect(ds.TriggerEffect.off());
+        leds.resetLeds(&self.config, &builder);
+        return builder.toReport() catch ds.ReportBuilder.offReport();
     }
 
     /// Releases effects and closes the device. Safe when disconnected.
@@ -129,7 +133,13 @@ test "replay all captured packets through the mapping" {
         const frame = parser.parseHorizonPacket(buf);
         const report = hap.buildReport(std.testing.io, &frame);
 
-        try std.testing.expectEqual(ds.Flag0.AUDIO_HAPTICS, report.common.valid_flag0);
+        // Sink-apply bits from boostInternalSpeaker, plus both trigger bits
+        // (trigger effects are set every report; released ones included).
+        try std.testing.expectEqual(
+            ds.Flag0.APPLY_AUDIO_CONTROL | ds.Flag0.SPEAKER_VOLUME |
+                ds.Flag0.LEFT_TRIGGER | ds.Flag0.RIGHT_TRIGGER,
+            report.common.valid_flag0,
+        );
         try std.testing.expectEqual(
             ds.Flag1.AUDIO_CONTROL2_ENABLE |
                 ds.Flag1.LIGHTBAR_CONTROL_ENABLE |

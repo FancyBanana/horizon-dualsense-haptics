@@ -4,26 +4,20 @@
 
 const std = @import("std");
 const parser = @import("fh5_packet_parser.zig");
-const ds = @import("hardware/dualsense.zig");
+const ds = @import("hardware/dualsense-util.zig");
 const config = @import("config.zig");
 
-/// Surface rumble -> classic motor bytes (simple mode only).
-pub fn updateMotors(motor_mode: config.MotorMode, frame: *const parser.HorizonFrame, report: *ds.UsbOutputReport) void {
+/// Surface rumble -> classic motor bytes (simple mode only).  Sets only the
+/// Flag0.RUMBLE bits on the builder; other features compose independently.
+pub fn updateMotors(motor_mode: config.MotorMode, frame: *const parser.HorizonFrame, builder: *ds.ReportBuilder) void {
     // SurfaceRumble is a 0..1 per-wheel force.
     const l = max2(frame.SurfaceRumbleFl, frame.SurfaceRumbleRl);
     const r = max2(frame.SurfaceRumbleFr, frame.SurfaceRumbleRr);
     switch (motor_mode) {
-        .simple => {
-            report.common.motor_right = scaleMotor(r);
-            report.common.motor_left = scaleMotor(l);
-        },
+        .simple => builder.setMotorsNorm(l, r),
         // Audio mode drives the actuators via the audio stream instead.
         .audio => {},
     }
-}
-
-fn scaleMotor(v: f32) u8 {
-    return @intFromFloat(std.math.clamp(finiteOrZero(v), 0, 1) * 255.0);
 }
 
 fn max2(a: f32, b: f32) f32 {
@@ -42,9 +36,10 @@ test "simple mode enables classic rumble flags" {
     frame.SurfaceRumbleFl = 1.0;
     frame.SurfaceRumbleFr = 0.5;
 
-    var report: ds.UsbOutputReport = .{};
-    updateMotors(.simple, &frame, &report);
-    try std.testing.expectEqual(ds.Flag0.RUMBLE_AND_TRIGGERS, report.common.valid_flag0);
+    var b: ds.ReportBuilder = .{};
+    updateMotors(.simple, &frame, &b);
+    const report = try b.toReport();
+    try std.testing.expectEqual(ds.Flag0.RUMBLE, report.common.valid_flag0);
     try std.testing.expectEqual(@as(u8, 0), report.common.valid_flag1);
     try std.testing.expect(report.common.motor_left > report.common.motor_right);
     try std.testing.expect(report.common.motor_right > 0);

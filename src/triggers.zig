@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const parser = @import("fh5_packet_parser.zig");
-const ds = @import("hardware/dualsense.zig");
+const ds = @import("hardware/dualsense-util.zig");
 const config = @import("config.zig");
 
 const Params = config.Params;
@@ -29,40 +29,40 @@ pub const TriggerState = struct {
 
     /// L2 = brake.
     pub fn leftTrigger(self: *const TriggerState, params: *const Params, frame: *const parser.HorizonFrame, now_ms: i64) ds.TriggerEffect {
-        if (frame.IsRaceOn == 0) return ds.triggerEffectOff();
+        if (frame.IsRaceOn == 0) return ds.TriggerEffect.off();
 
-        if (now_ms < self.shift_until_ms) return ds.triggerEffectVibrate(params.shift_burst_freq, params.shift_burst_amp);
+        if (now_ms < self.shift_until_ms) return ds.TriggerEffect.vibrate(params.shift_burst_freq, params.shift_burst_amp);
 
-        if (frame.HandBrake > 0) return ds.triggerEffectRigid(params.handbrake_force);
+        if (frame.HandBrake > 0) return ds.TriggerEffect.rigid(params.handbrake_force);
 
         if (frame.Brake >= params.abs_brake_threshold and isLockingUp(params, frame)) {
-            return ds.triggerEffectVibrate(params.abs_freq, params.abs_amp);
+            return ds.TriggerEffect.vibrate(params.abs_freq, params.abs_amp);
         }
 
         // Resistance rises with pull depth, like a hydraulic pedal.
         const mag = ramp(frame.Brake, params.brake_deadzone, params.brake_zone_max);
-        if (mag == 0) return ds.triggerEffectOff();
-        return ds.triggerEffectRigidZones(risingZones(mag));
+        if (mag == 0) return ds.TriggerEffect.off();
+        return ds.TriggerEffect.rigidZones(ds.risingZones(mag));
     }
 
     /// R2 = throttle.
     pub fn rightTrigger(self: *const TriggerState, params: *const Params, frame: *const parser.HorizonFrame, now_ms: i64) ds.TriggerEffect {
-        if (frame.IsRaceOn == 0) return ds.triggerEffectOff();
+        if (frame.IsRaceOn == 0) return ds.TriggerEffect.off();
 
-        if (now_ms < self.shift_until_ms) return ds.triggerEffectVibrate(params.shift_burst_freq, params.shift_burst_amp);
+        if (now_ms < self.shift_until_ms) return ds.TriggerEffect.vibrate(params.shift_burst_freq, params.shift_burst_amp);
 
         if (frame.EngineMaxRpm > 0 and frame.CurrentEngineRpm >= frame.EngineMaxRpm * params.rev_limit_ratio) {
-            return ds.triggerEffectVibrateZones(zoneBand(params.rev_limit_zone_start, zoneAmp(params.rev_limit_amp)), params.rev_limit_freq);
+            return ds.TriggerEffect.vibrateZones(ds.zoneBand(params.rev_limit_zone_start, ds.zoneAmp(params.rev_limit_amp)), params.rev_limit_freq);
         }
 
         if (frame.Accel >= params.wheelspin_accel_threshold and wheelSpinning(params, frame)) {
-            return ds.triggerEffectVibrateZones(
-                zoneBand(params.wheelspin_zone_start, zoneAmp(params.wheelspin_amp)),
+            return ds.TriggerEffect.vibrateZones(
+                ds.zoneBand(params.wheelspin_zone_start, ds.zoneAmp(params.wheelspin_amp)),
                 wheelspinFreq(params, frame),
             );
         }
 
-        return ds.triggerEffectRigid(ramp(frame.Accel, params.throttle_deadzone, params.throttle_max_force));
+        return ds.TriggerEffect.rigid(ramp(frame.Accel, params.throttle_deadzone, params.throttle_max_force));
     }
 };
 
@@ -93,31 +93,6 @@ pub fn ramp(value: u8, deadzone: u8, max_force: u8) u8 {
     return @intCast(f);
 }
 
-/// Zones 0..9 with resistance rising to `mag` along the pull.
-pub fn risingZones(mag: u8) [10]u8 {
-    const m = std.math.clamp(mag, 0, 8);
-    var zones: [10]u8 = undefined;
-    for (0..10) |i| {
-        const t: f32 = @as(f32, @floatFromInt(i)) / 9.0;
-        zones[i] = @intFromFloat(@round(t * @as(f32, @floatFromInt(m))));
-    }
-    return zones;
-}
-
-/// Zones `start`..9 at level `amp` (1..8), rest off.
-pub fn zoneBand(start: u8, amp: u8) [10]u8 {
-    var zones = [_]u8{0} ** 10;
-    const a = std.math.clamp(amp, 1, 8);
-    const first = @min(@as(usize, start), zones.len);
-    for (zones[first..]) |*z| z.* = a;
-    return zones;
-}
-
-/// 0..255 amplitude byte -> 1..8 zone level.
-pub fn zoneAmp(a: u8) u8 {
-    return @intFromFloat(std.math.clamp(@as(f32, @floatFromInt(a)) / 255.0 * 8.0, 1, 8));
-}
-
 fn max2(a: f32, b: f32) f32 {
     const left = finiteOrZero(a);
     const right = finiteOrZero(b);
@@ -133,25 +108,25 @@ fn maxAbs4(a: f32, b: f32, c: f32, d: f32) f32 {
 }
 
 test "trigger zone helpers" {
-    const r = risingZones(8);
+    const r = ds.risingZones(8);
     try std.testing.expectEqual(@as(u8, 0), r[0]);
     try std.testing.expectEqual(@as(u8, 8), r[9]);
     for (r, 0..) |v, i| {
         if (i > 0) try std.testing.expect(v >= r[i - 1]);
     }
-    const off = risingZones(0);
+    const off = ds.risingZones(0);
     for (off) |v| try std.testing.expectEqual(@as(u8, 0), v);
 
-    const band = zoneBand(5, 6);
+    const band = ds.zoneBand(5, 6);
     try std.testing.expectEqual(@as(u8, 0), band[4]);
     try std.testing.expectEqual(@as(u8, 6), band[5]);
     try std.testing.expectEqual(@as(u8, 6), band[9]);
 
-    const empty = zoneBand(255, 6);
+    const empty = ds.zoneBand(255, 6);
     for (empty) |v| try std.testing.expectEqual(@as(u8, 0), v);
 
-    try std.testing.expectEqual(@as(u8, 8), zoneAmp(255));
-    try std.testing.expectEqual(@as(u8, 1), zoneAmp(1));
+    try std.testing.expectEqual(@as(u8, 8), ds.zoneAmp(255));
+    try std.testing.expectEqual(@as(u8, 1), ds.zoneAmp(1));
 }
 
 test "brake uses rising rigid zones, throttle uses uniform rigid" {
@@ -163,12 +138,12 @@ test "brake uses rising rigid zones, throttle uses uniform rigid" {
     frame.IsRaceOn = 1;
     frame.Brake = 200; // hard brake, not locking up
     const brake = state.leftTrigger(&params, &frame, now);
-    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.rigid_zones), brake[0]);
+    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.rigid_zones), brake.data[0]);
 
     frame.Brake = 0;
     frame.Accel = 200; // full throttle, no slip
     const throttle = state.rightTrigger(&params, &frame, now);
-    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.rigid), throttle[0]);
+    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.rigid), throttle.data[0]);
 }
 
 test "wheelspin and rev-limit use vibrate zones" {
@@ -183,7 +158,7 @@ test "wheelspin and rev-limit use vibrate zones" {
     frame.CurrentEngineRpm = 7000;
     frame.Accel = 200;
     const rev = state.rightTrigger(&params, &frame, now);
-    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.vibrate_zones), rev[0]);
+    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.vibrate_zones), rev.data[0]);
 
     // wheelspin: high accel + slip while moving
     frame.CurrentEngineRpm = 4000;
@@ -193,5 +168,5 @@ test "wheelspin and rev-limit use vibrate zones" {
     frame.TireCombinedSlipRl = 1.2;
     frame.TireCombinedSlipRr = 1.2;
     const spin = state.rightTrigger(&params, &frame, now);
-    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.vibrate_zones), spin[0]);
+    try std.testing.expectEqual(@intFromEnum(ds.EffectMode.vibrate_zones), spin.data[0]);
 }

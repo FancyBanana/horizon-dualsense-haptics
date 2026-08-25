@@ -84,6 +84,16 @@ pub fn build(b: *std.Build) void {
     }));
     test_step.dependOn(&run_dualsense_tests.step);
 
+    const dualsense_util_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/hardware/dualsense-util.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_dualsense_util_tests = b.addRunArtifact(b.addTest(.{
+        .root_module = dualsense_util_test_mod,
+    }));
+    test_step.dependOn(&run_dualsense_util_tests.step);
+
     const parser_test_mod = b.createModule(.{
         .root_source_file = b.path("src/fh5_packet_parser.zig"),
         .target = target,

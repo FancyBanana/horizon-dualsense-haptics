@@ -11,6 +11,10 @@
 //! The `UsbOutputReport` and `BtOutputReport` types keep the same shape the
 //! rest of the app already uses.  The larger `FullUsbOutputReport`,
 //! `OutputReportCommon`, and input-report types are included as a reference.
+//!
+//! For building output reports, prefer the high-level API in
+//! `dualsense-util.zig` (`ReportBuilder`, trigger effect constructors); this
+//! module is the raw wire-format reference it compiles down to.
 
 const std = @import("std");
 
@@ -26,7 +30,10 @@ pub const Bus = enum {
     bluetooth,
 };
 
-// Output reports.  `USB_REPORT_*` are the short 48-byte form used by this app.
+// Output reports.  `USB_REPORT_*` are the short 48-byte form used by this
+// app (also used by SDL); the controller additionally accepts the full
+// 63-byte form (`FullUsbOutputReport`) used by the kernel driver and
+// dualsensectl — both wire formats are valid on USB.
 pub const USB_REPORT_ID: u8 = 0x02;
 pub const USB_REPORT_SIZE: usize = 48;
 pub const USB_OUTPUT_REPORT_FULL_SIZE: usize = 63;
@@ -54,16 +61,23 @@ pub const FEATURE_BLUETOOTH_CONTROL_ID: u8 = 0x08;
 pub const FEATURE_BLUETOOTH_CONTROL_SIZE: usize = 47;
 pub const FEATURE_CRC_SEED: u8 = 0xA3;
 
+/// Offset of the little-endian u16 "update version" inside the firmware
+/// feature report (0x20). The controller gates improved rumble emulation
+/// (FLAG2_RUMBLE_V2) on this version.
+pub const FEATURE_FIRMWARE_VERSION_OFFSET: usize = 44;
+
 // ---------------------------------------------------------------------------
 // Output-report flag bits
 // ---------------------------------------------------------------------------
 
-/// valid_flag0 (byte 1 of the common output payload).
+/// valid_flag0 (byte 1 of the common output payload).  Kernel names in
+/// parentheses (hid-playstation.c).
 pub const Flag0 = struct {
-    /// Start the classic rumble motors (must be combined with `RUMBLE_CLASSIC`).
+    /// Apply the rumble motor strengths (kernel `COMPATIBLE_VIBRATION`).
     pub const RUMBLE_ENABLE: u8 = 0x01;
-    /// Select classic rumble emulation. Combined with `RUMBLE_ENABLE` this
-    /// enables the rumble bytes and silences the voice-coil actuators.
+    /// Select the classic-rumble actuator mode instead of voice-coil haptics
+    /// (kernel `HAPTICS_SELECT`; despite its name, hid-playstation.c sets
+    /// this bit for classic rumble together with `COMPATIBLE_VIBRATION`).
     pub const RUMBLE_CLASSIC: u8 = 0x02;
     pub const RUMBLE: u8 = RUMBLE_ENABLE | RUMBLE_CLASSIC;
 
@@ -77,13 +91,8 @@ pub const Flag0 = struct {
     pub const MIC_VOLUME: u8 = 0x40;
     pub const APPLY_AUDIO_CONTROL: u8 = 0x80;
 
-    /// Default simple-mode flags: classic rumble motors plus adaptive triggers.
+    /// Default simple-mode flags: rumble emulation plus adaptive triggers.
     pub const RUMBLE_AND_TRIGGERS: u8 = RUMBLE | RIGHT_TRIGGER | LEFT_TRIGGER;
-
-    /// Bits for the USB audio-haptics path: adaptive triggers plus all audio
-    /// bytes. Rumble bits are intentionally excluded.
-    pub const AUDIO_HAPTICS: u8 = RIGHT_TRIGGER | LEFT_TRIGGER |
-        HEADPHONE_VOLUME | SPEAKER_VOLUME | MIC_VOLUME | APPLY_AUDIO_CONTROL;
 };
 
 /// valid_flag1 (byte 2 of the common output payload).
@@ -104,12 +113,40 @@ pub const Audio = struct {
     pub const SPEAKER_VOLUME_MAX: u8 = 0x64;
     pub const MIC_VOLUME_MAX: u8 = 0x40;
 
-    /// Byte 8: un-mute internal speaker (output path sel = 3) and route
-    /// RL/RR to the haptic actuators.
+    /// Selects which sinks receive the L/R channel sources (bits 4-5 of
+    /// `audio_enable_bits`; table from hid-playstation.c; columns are
+    /// sinks, entries are the source routed to each):
+    ///
+    ///        HP-left  HP-right Speaker
+    ///   0:   L        R        X (unrouted)
+    ///   1:   L        L        X
+    ///   2:   L        L        R
+    ///   3:   X        X        R   <- `PATH_SEL_INTERNAL_SPEAKER`
+    ///
+    /// NOTE: the haptic actuators are NOT a sink in this table — over USB
+    /// they are driven by the rear-left/right channels of the 4-channel
+    /// audio interface, independently of this nibble.
+    /// Path select 0 (power-on default): L -> headphone left,
+    /// R -> headphone right, internal speaker unrouted/muted.
+    pub const PATH_SEL_HEADPHONES: u8 = 0x00;
+
+    /// Path select 3: HP-left/HP-right sinks muted, R source routed to the
+    /// internal mono speaker.
     pub const PATH_SEL_INTERNAL_SPEAKER: u8 = 0x30;
 
     /// Byte 38: speaker preamp gain +6 dB (bits 0-2 of audio_control2).
     pub const SP_PREAMP_GAIN_6DB: u8 = 0x02;
+
+    // Microphone input flags for byte 8 (dualsensectl "audio_flags"):
+    pub const FORCE_INTERNAL_MIC: u8 = 0x01;
+    pub const FORCE_HEADSET_MIC: u8 = 0x02;
+    pub const ECHO_CANCEL: u8 = 0x04;
+    pub const NOISE_CANCEL: u8 = 0x08;
+
+    /// Mic input path select (bits 6-7 of byte 8): voice-chat processing.
+    pub const INPUT_PATH_CHAT: u8 = 1 << 6;
+    /// Mic input path select (bits 6-7 of byte 8): ASR/raw path.
+    pub const INPUT_PATH_ASR: u8 = 2 << 6;
 };
 
 /// Power-save control bits (byte 10 of the common output payload).
@@ -127,17 +164,21 @@ pub const PowerSave = struct {
 /// valid_flag2 (byte 39 of the common output payload).
 pub const FLAG2_LED_BRIGHTNESS_CONTROL_ENABLE: u8 = 0x01;
 pub const FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE: u8 = 0x02;
-pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation, firmware 2.24+
+pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation; update version >= 2.21
 
 /// lightbar_setup (byte 41 of the common output payload).
+pub const LIGHTBAR_SETUP_NO_CHANGE: u8 = 0x00; // 0 keeps the current setup
 pub const LIGHTBAR_SETUP_LIGHT_ON: u8 = 0x01;
 pub const LIGHTBAR_SETUP_LIGHT_OUT: u8 = 0x02;
+
+/// haptics_flags (byte 40 of the common output payload).
+pub const HAPTICS_FLAG_LOW_PASS_FILTER: u8 = 0x01;
 
 /// Player-indicator LED patterns indexed by player number 0..5.
 ///
 /// Current firmware uses the byte directly: bit 0 and bit 4 are the outer
 /// LEDs, bit 2 is the center LED. Patterns match the Linux hid-playstation
-/// mapping.
+/// mapping; entries 6-7 are the extra non-player patterns from dualsensectl.
 pub const PLAYER_LED_PATTERNS = [_]u8{
     0x00, // 0 = off
     0x04, // 1: center
@@ -145,7 +186,13 @@ pub const PLAYER_LED_PATTERNS = [_]u8{
     0x15, // 3: center + outer pair
     0x1B, // 4: inner + outer pair
     0x1F, // 5: all
+    0x11, // 6: outer pair
+    0x0E, // 7: inner three
 };
+
+/// Bit 5 of the player_leds byte: apply the pattern instantly instead of
+/// with the fade animation.
+pub const PLAYER_LEDS_INSTANT: u8 = 0x20;
 
 /// Mute-button LED modes (mic_light_mode / mute_button_led).
 pub const MuteLedMode = enum(u8) {
@@ -153,6 +200,13 @@ pub const MuteLedMode = enum(u8) {
     on = 1,
     pulse = 2,
 };
+
+/// Whether the controller firmware supports improved rumble emulation
+/// (FLAG2_RUMBLE_V2): true for update version >= 2.21 (the value read from
+/// feature report 0x20 at `FEATURE_FIRMWARE_VERSION_OFFSET`).
+pub fn rumbleV2Supported(update_version: u16) bool {
+    return update_version >= (2 << 8 | 21);
+}
 
 // ---------------------------------------------------------------------------
 // Output-report packet layouts
@@ -166,15 +220,24 @@ pub const OutputReportCommon = extern struct {
     motor_right: u8 = 0,
     motor_left: u8 = 0,
     headphone_volume: u8 = 0,
+    /// 0x00..0x64; firmware reportedly accepts ~0x3d..0x64 (kernel driver).
+    /// The kernel sets 0x64 (100%) when routing to the internal speaker.
     speaker_volume: u8 = 0,
     microphone_volume: u8 = 0,
     audio_enable_bits: u8 = 0,
     mic_light_mode: u8 = 0,
-    audio_mute_bits: u8 = 0,
+    /// Power-save and mute control (byte 10). Bits 0-3 selectively disable
+    /// features when idle, bits 4-7 mute outputs. Gated by
+    /// `Flag1.POWER_SAVE_CONTROL_ENABLE`. See `PowerSave` for the bit layout.
+    power_save_mute_control: u8 = 0,
     right_trigger_effect: [11]u8 = [_]u8{0} ** 11,
     left_trigger_effect: [11]u8 = [_]u8{0} ** 11,
     host_timestamp: [4]u8 = [_]u8{0} ** 4,
-    reduce_motor_power: u8 = 0,
+    /// Vibration attenuation (byte 37): scales down classic-rumble strength
+    /// (bits 0-2) and trigger vibration strength (bits 4-6), each 0..7.
+    /// Gated by `Flag1.VIBRATION_ATTENUATION_ENABLE`; see
+    /// `ReportBuilder.setVibrationAttenuation` in dualsense-util.zig.
+    motor_power_level: u8 = 0,
     audio_control2: u8 = 0,
     valid_flag2: u8 = FLAG2_RUMBLE_V2,
     haptics_flags: u8 = 0,
@@ -197,6 +260,11 @@ pub const UsbOutputReport = extern struct {
     pub fn fromCommon(common_report: *const OutputReportCommon) UsbOutputReport {
         return .{ .common = common_report.* };
     }
+
+    /// Serialize to the 48-byte wire format.
+    pub fn toBytes(self: *const UsbOutputReport) [USB_REPORT_SIZE]u8 {
+        return std.mem.asBytes(self)[0..USB_REPORT_SIZE].*;
+    }
 };
 
 /// The kernel's full 63-byte USB output report.  Identical to the short form
@@ -205,6 +273,11 @@ pub const FullUsbOutputReport = extern struct {
     report_id: u8 = USB_REPORT_ID,
     common: OutputReportCommon = .{},
     reserved: [15]u8 = [_]u8{0} ** 15,
+
+    /// Serialize to the 63-byte wire format.
+    pub fn toBytes(self: *const FullUsbOutputReport) [USB_OUTPUT_REPORT_FULL_SIZE]u8 {
+        return std.mem.asBytes(self)[0..USB_OUTPUT_REPORT_FULL_SIZE].*;
+    }
 };
 
 /// Bluetooth output report: the 47-byte common section wrapped in a
@@ -227,6 +300,16 @@ pub const BtOutputReport = extern struct {
         bt.crc[2] = @truncate(checksum >> 16);
         bt.crc[3] = @truncate(checksum >> 24);
         return bt;
+    }
+
+    /// Serialize to the 78-byte wire format.  The CRC32-LE over the first
+    /// 74 bytes is (re)written into the last four bytes, so the result is
+    /// always a valid packet even if fields were mutated after construction.
+    pub fn toBytes(self: *const BtOutputReport) [BT_REPORT_SIZE]u8 {
+        var bytes: [BT_REPORT_SIZE]u8 = std.mem.asBytes(self)[0..BT_REPORT_SIZE].*;
+        const checksum = crc32Le(BT_CRC_SEED, bytes[0..74]);
+        std.mem.writeInt(u32, bytes[74..78], checksum, .little);
+        return bytes;
     }
 };
 
@@ -262,12 +345,14 @@ fn crc32LeUpdate(initial: u32, bytes: []const u8) u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Adaptive trigger effects
+// Adaptive trigger effects (raw encodings; constructors in dualsense-util.zig)
 // ---------------------------------------------------------------------------
 
 /// Trigger effect mode byte (byte 0 of the 11-byte effect section).
-/// Note: `rigid_zones` is the community name for the feedback effect (0x21)
-/// and `vibrate_zones` is the per-zone vibration effect (0x26).
+/// Canonical community names (Nielk1/Sony API) in parentheses:
+/// `rigid_zones` = Feedback, `weapon` = SemiAutomaticGun, `vibrate_zones` =
+/// AutomaticGun, `rigid` = Simple_Feedback, `section` = Simple_Weapon,
+/// `vibrate` = Simple_Vibration.
 pub const EffectMode = enum(u8) {
     rigid = 0x01, // uniform resistance: [start_pos, force]
     section = 0x02, // section/pulse resistance
@@ -284,133 +369,6 @@ pub const EffectMode = enum(u8) {
 
 /// Eleven-byte trigger effect payload.
 pub const TriggerEffect = [11]u8;
-
-pub fn triggerEffectOff() TriggerEffect {
-    return makeEffect(.reset, &.{0});
-}
-
-/// Uniform resistance; `force` 0..255 (0 is low force, not off).
-pub fn triggerEffectRigid(force: u8) TriggerEffect {
-    return makeEffect(.rigid, &.{ 0, force });
-}
-
-/// Single-point vibration; `freq` and `amp` are 0..255.
-pub fn triggerEffectVibrate(freq: u8, amp: u8) TriggerEffect {
-    return makeEffect(.vibrate, &.{ freq, amp });
-}
-
-/// Per-zone resistance; 10 zones, 0 = inactive, 1..8 = strength.
-pub fn triggerEffectRigidZones(zones: [10]u8) TriggerEffect {
-    var e = makeEffect(.rigid_zones, &.{});
-    e[1..7].* = packZones(zones);
-    return e;
-}
-
-/// Per-zone vibration; 10 zones, 0 = inactive, 1..8 = amplitude.
-pub fn triggerEffectVibrateZones(zones: [10]u8, freq: u8) TriggerEffect {
-    var e = makeEffect(.vibrate_zones, &.{});
-    e[1..7].* = packZones(zones);
-    e[9] = freq;
-    return e;
-}
-
-/// Feedback effect with resistance starting at `position` (0..9) and strength
-/// 1..8 applied to every zone from `position` to the end.
-pub fn triggerEffectFeedback(position: u8, strength: u8) TriggerEffect {
-    var zones = [_]u8{0} ** 10;
-    const pos = @min(position, 9);
-    const s = @min(strength, 8);
-    for (pos..10) |i| zones[i] = s;
-    return triggerEffectRigidZones(zones);
-}
-
-/// Weapon effect: resistance between `start` and `end` positions (0..8/9).
-pub fn triggerEffectWeapon(start: u8, end: u8, strength: u8) TriggerEffect {
-    var e = makeEffect(.weapon, &.{});
-    const mask = startStopZones(start, end);
-    e[1] = @truncate(mask);
-    e[2] = @truncate(mask >> 8);
-    e[3] = @min(strength, 8) -| 1;
-    return e;
-}
-
-/// Bow effect: resistance between `start` and `end` with `strength` and
-/// `snap_force` (both 1..8).
-pub fn triggerEffectBow(start: u8, end: u8, strength: u8, snap_force: u8) TriggerEffect {
-    var e = makeEffect(.bow, &.{});
-    const mask = startStopZones(start, end);
-    const pair = forcePair(strength -| 1, snap_force -| 1);
-    e[1] = @truncate(mask);
-    e[2] = @truncate(mask >> 8);
-    e[3] = @truncate(pair);
-    return e;
-}
-
-/// Galloping effect between `start` and `end` with two foot strengths and a
-/// frequency (all 1..255).
-pub fn triggerEffectGalloping(start: u8, end: u8, first_foot: u8, second_foot: u8, frequency: u8) TriggerEffect {
-    var e = makeEffect(.galloping, &.{});
-    const mask = startStopZones(start, end);
-    const pair = forcePair(second_foot, first_foot);
-    e[1] = @truncate(mask);
-    e[2] = @truncate(mask >> 8);
-    e[3] = @truncate(pair);
-    e[4] = frequency;
-    return e;
-}
-
-/// Machine effect that alternates between `strength_a` and `strength_b`
-/// (0..7) at `frequency` and `period`.
-pub fn triggerEffectMachine(start: u8, end: u8, strength_a: u8, strength_b: u8, frequency: u8, period: u8) TriggerEffect {
-    var e = makeEffect(.machine, &.{});
-    const mask = startStopZones(start, end);
-    const pair = forcePair(strength_a, strength_b);
-    e[1] = @truncate(mask);
-    e[2] = @truncate(mask >> 8);
-    e[3] = @truncate(pair);
-    e[4] = frequency;
-    e[5] = period;
-    return e;
-}
-
-fn makeEffect(mode: EffectMode, params: []const u8) TriggerEffect {
-    var e: TriggerEffect = [_]u8{0} ** 11;
-    e[0] = @intFromEnum(mode);
-    for (params, 1..) |p, i| e[i] = p;
-    return e;
-}
-
-fn startStopZones(start: u8, end: u8) u16 {
-    const s = @min(start, 9);
-    const e = @min(end, 9);
-    return (@as(u16, 1) << @intCast(s)) | (@as(u16, 1) << @intCast(e));
-}
-
-fn forcePair(a: u8, b: u8) u8 {
-    return (a & 0x07) | ((b & 0x07) << 3);
-}
-
-/// Packs 10 zone levels into the 6-byte active-mask + 3-bits-per-zone
-/// payload (kernel/SDL encoding).
-fn packZones(zones: [10]u8) [6]u8 {
-    var active: u16 = 0;
-    var packed_bits: u32 = 0;
-    for (zones, 0..) |z, i| {
-        const level = @min(z, 8);
-        if (level > 0) {
-            active |= @as(u16, 1) << @intCast(i);
-            packed_bits |= @as(u32, level - 1) << @intCast(3 * i);
-        }
-    }
-    return .{
-        @truncate(active),
-        @truncate(active >> 8),
-        @truncate(packed_bits),
-        @truncate(packed_bits >> 8),
-        @truncate(packed_bits >> 16),
-        @truncate(packed_bits >> 24),
-    };
-}
 
 // ---------------------------------------------------------------------------
 // Input reports
@@ -593,6 +551,16 @@ pub const InputReportCommon = extern struct {
 pub const UsbInputReport = extern struct {
     report_id: u8 = USB_INPUT_REPORT_ID,
     common: InputReportCommon,
+
+    /// Parse a full 64-byte USB input report.  Returns null when the buffer
+    /// has the wrong length or report ID.
+    pub fn fromBytes(bytes: []const u8) ?UsbInputReport {
+        if (bytes.len != USB_INPUT_REPORT_SIZE) return null;
+        if (bytes[0] != USB_INPUT_REPORT_ID) return null;
+        var report: UsbInputReport = undefined;
+        @memcpy(std.mem.asBytes(&report), bytes);
+        return report;
+    }
 };
 
 /// Bluetooth input report: report ID 0x31, one header byte, the 63-byte
@@ -618,6 +586,17 @@ pub const BtInputReport = extern struct {
     pub fn verifyCrc(self: *const BtInputReport) bool {
         const bytes = std.mem.asBytes(self);
         return verifyBluetoothInputCrc(bytes);
+    }
+
+    /// Parse a full 78-byte Bluetooth input report.  Returns null when the
+    /// buffer has the wrong length or report ID.  Callers should also run
+    /// `verifyCrc` on the result before trusting the data.
+    pub fn fromBytes(bytes: []const u8) ?BtInputReport {
+        if (bytes.len != BT_INPUT_REPORT_SIZE) return null;
+        if (bytes[0] != BT_INPUT_REPORT_ID) return null;
+        var report: BtInputReport = undefined;
+        @memcpy(std.mem.asBytes(&report), bytes);
+        return report;
     }
 };
 
@@ -740,7 +719,13 @@ pub fn decodeInput(report: *const InputReportCommon) InputState {
                 .y = touch1.y(),
             },
         },
-        .battery_capacity = @min(cap * 10 + 5, 100),
+        .battery_capacity = switch (charging) {
+            // Kernel mapping: 0 discharging / 1 charging -> data*10+5 %;
+            // 0x2 full -> 100%; anything else (not-charging, failure) -> 0%.
+            0x0, 0x1 => @min(cap * 10 + 5, 100),
+            0x2 => 100,
+            else => 0,
+        },
         .battery_status = @enumFromInt(charging),
         .headphone = report.status1 & Status1.HP_DETECT != 0,
         .microphone = report.status1 & Status1.MIC_DETECT != 0,
@@ -789,6 +774,63 @@ test "output report size" {
     try std.testing.expectEqual(BT_REPORT_SIZE, @sizeOf(BtOutputReport));
 }
 
+test "input report fromBytes" {
+    // USB round-trip.
+    var usb_bytes: [USB_INPUT_REPORT_SIZE]u8 = [_]u8{0} ** USB_INPUT_REPORT_SIZE;
+    usb_bytes[0] = USB_INPUT_REPORT_ID;
+    usb_bytes[1] = 128; // left_stick_x
+    const usb_report = UsbInputReport.fromBytes(&usb_bytes).?;
+    try std.testing.expectEqual(USB_INPUT_REPORT_ID, usb_report.report_id);
+    try std.testing.expectEqual(@as(u8, 128), usb_report.common.left_stick_x);
+
+    try std.testing.expect(UsbInputReport.fromBytes(usb_bytes[1..]) == null);
+    usb_bytes[0] = 0xFF;
+    try std.testing.expect(UsbInputReport.fromBytes(&usb_bytes) == null);
+
+    // Bluetooth round-trip.
+    var bt_bytes: [BT_INPUT_REPORT_SIZE]u8 = [_]u8{0} ** BT_INPUT_REPORT_SIZE;
+    bt_bytes[0] = BT_INPUT_REPORT_ID;
+    bt_bytes[2] = 64; // left_stick_x
+    const bt_report = BtInputReport.fromBytes(&bt_bytes).?;
+    try std.testing.expectEqual(BT_INPUT_REPORT_ID, bt_report.report_id);
+    try std.testing.expectEqual(@as(u8, 64), bt_report.common.left_stick_x);
+
+    try std.testing.expect(BtInputReport.fromBytes(bt_bytes[1..]) == null);
+    bt_bytes[0] = 0xFF;
+    try std.testing.expect(BtInputReport.fromBytes(&bt_bytes) == null);
+}
+
+test "output report toBytes round-trip and checksum" {
+    var usb: UsbOutputReport = .{};
+    usb.common.motor_left = 0x42;
+    const usb_bytes = usb.toBytes();
+    try std.testing.expectEqual(USB_REPORT_SIZE, usb_bytes.len);
+    try std.testing.expectEqual(USB_REPORT_ID, usb_bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0x42), usb_bytes[4]); // motor_left
+
+    var full: FullUsbOutputReport = .{};
+    full.common.motor_right = 0x11;
+    const full_bytes = full.toBytes();
+    try std.testing.expectEqual(USB_OUTPUT_REPORT_FULL_SIZE, full_bytes.len);
+    try std.testing.expectEqual(USB_REPORT_ID, full_bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0x11), full_bytes[3]); // motor_right
+    try std.testing.expectEqual(@as(u8, 0), full_bytes[62]); // padding
+
+    var bt: BtOutputReport = .{ .sequence = (5 & 0x0F) << 4 };
+    bt.common[2] = 0x99;
+    bt.crc = [_]u8{0xAA} ** 4; // stale checksum must be overwritten
+    const bt_bytes = bt.toBytes();
+    try std.testing.expectEqual(BT_REPORT_SIZE, bt_bytes.len);
+    try std.testing.expectEqual(BT_REPORT_ID, bt_bytes[0]);
+    try std.testing.expectEqual(BT_OUTPUT_TAG, bt_bytes[2]);
+    try std.testing.expectEqual(@as(u8, 0x99), bt_bytes[5]); // common[2]
+    var checksum: u32 = bt_bytes[74];
+    checksum |= @as(u32, bt_bytes[75]) << 8;
+    checksum |= @as(u32, bt_bytes[76]) << 16;
+    checksum |= @as(u32, bt_bytes[77]) << 24;
+    try std.testing.expectEqual(checksum, crc32Le(BT_CRC_SEED, bt_bytes[0..74]));
+}
+
 test "input report size" {
     try std.testing.expectEqual(USB_INPUT_REPORT_SIZE, @sizeOf(UsbInputReport));
     try std.testing.expectEqual(BT_INPUT_REPORT_SIZE, @sizeOf(BtInputReport));
@@ -799,7 +841,8 @@ test "bluetooth report wraps USB fields and checksum" {
     var usb: UsbOutputReport = .{};
     usb.common.motor_left = 0x12;
     usb.common.motor_right = 0x34;
-    usb.common.left_trigger_effect = triggerEffectRigid(180);
+    // Rigid mode (0x01), force 180, at byte offsets 0 and 2 of the section.
+    usb.common.left_trigger_effect = .{ @intFromEnum(EffectMode.rigid), 0, 180 } ++ [_]u8{0} ** 8;
 
     const bt = BtOutputReport.fromUsb(&usb, 3);
     try std.testing.expectEqual(BT_REPORT_ID, bt.report_id);
@@ -822,65 +865,6 @@ test "crc32 little-endian known vector" {
     var crc = crc32LeUpdate(0xFFFFFFFF, "123456789");
     crc = ~crc;
     try std.testing.expectEqual(0xCBF43926, crc);
-}
-
-test "trigger effect encodings" {
-    const off = triggerEffectOff();
-    try std.testing.expectEqual(@intFromEnum(EffectMode.reset), off[0]);
-
-    const rigid = triggerEffectRigid(180);
-    try std.testing.expectEqual(@intFromEnum(EffectMode.rigid), rigid[0]);
-    try std.testing.expectEqual(0, rigid[1]);
-    try std.testing.expectEqual(180, rigid[2]);
-
-    const vibrate = triggerEffectVibrate(20, 130);
-    try std.testing.expectEqual(@intFromEnum(EffectMode.vibrate), vibrate[0]);
-    try std.testing.expectEqual(20, vibrate[1]);
-    try std.testing.expectEqual(130, vibrate[2]);
-
-    // top 2 zones maxed -> active = 0x0300
-    const zones = triggerEffectRigidZones(.{ 0, 0, 0, 0, 0, 0, 0, 0, 8, 8 });
-    try std.testing.expectEqual(@intFromEnum(EffectMode.rigid_zones), zones[0]);
-    try std.testing.expectEqual(0x00, zones[1]); // active mask low byte
-    try std.testing.expectEqual(0x03, zones[2]); // active mask high byte
-    try std.testing.expectEqual(0x00, zones[3]); // packed bits 0-7 (zones 0-2)
-    try std.testing.expectEqual(0x00, zones[4]); // packed bits 8-15 (zones 3-5)
-    try std.testing.expectEqual(0x00, zones[5]); // packed bits 16-23 (zones 6-7)
-    try std.testing.expectEqual(0x3F, zones[6]); // packed bits 24-29 (zones 8-9)
-
-    // all zones maxed -> 30-bit packed field all ones, freq at byte 9
-    const all = triggerEffectVibrateZones(.{ 8, 8, 8, 8, 8, 8, 8, 8, 8, 8 }, 20);
-    try std.testing.expectEqual(@intFromEnum(EffectMode.vibrate_zones), all[0]);
-    try std.testing.expectEqual(0xFF, all[1]);
-    try std.testing.expectEqual(0x03, all[2]);
-    try std.testing.expectEqual(0xFF, all[3]);
-    try std.testing.expectEqual(0xFF, all[4]);
-    try std.testing.expectEqual(0xFF, all[5]);
-    try std.testing.expectEqual(0x3F, all[6]);
-    try std.testing.expectEqual(20, all[9]);
-
-    const clamped = triggerEffectRigidZones(.{ 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 });
-    try std.testing.expectEqual(0x3F, clamped[6]);
-}
-
-test "advanced trigger effect constructors" {
-    const weapon = triggerEffectWeapon(2, 8, 8);
-    try std.testing.expectEqual(@intFromEnum(EffectMode.weapon), weapon[0]);
-    try std.testing.expectEqual(0x04, weapon[1]); // bit 2
-    try std.testing.expectEqual(0x01, weapon[2]); // bit 8
-    try std.testing.expectEqual(7, weapon[3]); // strength - 1
-
-    const bow = triggerEffectBow(1, 8, 8, 1);
-    try std.testing.expectEqual(@intFromEnum(EffectMode.bow), bow[0]);
-
-    const gallop = triggerEffectGalloping(0, 9, 0, 7, 3);
-    try std.testing.expectEqual(@intFromEnum(EffectMode.galloping), gallop[0]);
-    try std.testing.expectEqual(3, gallop[4]);
-
-    const machine = triggerEffectMachine(1, 9, 7, 7, 5, 10);
-    try std.testing.expectEqual(@intFromEnum(EffectMode.machine), machine[0]);
-    try std.testing.expectEqual(5, machine[4]);
-    try std.testing.expectEqual(10, machine[5]);
 }
 
 test "touch point decoding" {

@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const parser = @import("fh5_packet_parser.zig");
-const ds = @import("hardware/dualsense.zig");
+const ds = @import("hardware/dualsense-util.zig");
 const audio = @import("audio.zig");
 const config = @import("config.zig");
 
@@ -16,19 +16,14 @@ pub const AudioCue = struct {
     freq: f32 = 90,
 };
 
-/// Sets the flags that route haptics through USB audio.
-pub fn configureAudioReport(motor_mode: config.MotorMode, report: *ds.UsbOutputReport) void {
+/// Configures the HID report for PCM haptics: declares the voice-coil
+/// actuator mode (conflicts with rumble emulation at `toReport` time) and
+/// boosts the internal speaker so effect cues are audible. The haptic
+/// waveforms themselves travel on the RL/RR audio channels, not here.
+pub fn configureAudioReport(motor_mode: config.MotorMode, builder: *ds.ReportBuilder) void {
     if (motor_mode != .audio) return;
-
-    // Same flags the kernel driver uses for speaker + voice-coil routing.
-    report.common.valid_flag0 = ds.Flag0.AUDIO_HAPTICS;
-    report.common.valid_flag1 = ds.Flag1.AUDIO_CONTROL2_ENABLE;
-    // Rumble-v2 only applies to classic rumble emulation; leave it clear for
-    // the audio-haptics path.
-    report.common.valid_flag2 = 0;
-    report.common.audio_enable_bits = ds.Audio.PATH_SEL_INTERNAL_SPEAKER;
-    report.common.speaker_volume = ds.Audio.SPEAKER_VOLUME_MAX;
-    report.common.audio_control2 = ds.Audio.SP_PREAMP_GAIN_6DB;
+    builder.useVoiceCoilHaptics();
+    builder.boostInternalSpeaker();
 }
 
 /// Publishes per-side audio cues; called even while HID is disconnected.
