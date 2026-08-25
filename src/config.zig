@@ -57,7 +57,7 @@ pub const Params = struct {
 /// Static configuration; runtime state lives in `Haptics`.
 pub const HapticsConfig = struct {
     params: Params = .{},
-    motor_mode: MotorMode = .simple,
+    motor_mode: MotorMode = .audio, // kept in sync with Config.mode's default
     reconnect_interval_ms: i64 = 1_000,
     lightbar_enabled: bool = false,
     leds_enabled: bool = false,

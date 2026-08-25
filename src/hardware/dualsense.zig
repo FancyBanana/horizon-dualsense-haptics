@@ -166,7 +166,7 @@ pub const FLAG2_LED_BRIGHTNESS_CONTROL_ENABLE: u8 = 0x01;
 pub const FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE: u8 = 0x02;
 pub const FLAG2_RUMBLE_V2: u8 = 0x04; // improved rumble emulation; update version >= 2.21
 
-/// lightbar_setup (byte 41 of the common output payload).
+/// lightbar_setup (byte 42 of the common output payload).
 pub const LIGHTBAR_SETUP_NO_CHANGE: u8 = 0x00; // 0 keeps the current setup
 pub const LIGHTBAR_SETUP_LIGHT_ON: u8 = 0x01;
 pub const LIGHTBAR_SETUP_LIGHT_OUT: u8 = 0x02;
@@ -220,8 +220,9 @@ pub const OutputReportCommon = extern struct {
     motor_right: u8 = 0,
     motor_left: u8 = 0,
     headphone_volume: u8 = 0,
-    /// 0x00..0x64; firmware reportedly accepts ~0x3d..0x64 (kernel driver).
-    /// The kernel sets 0x64 (100%) when routing to the internal speaker.
+    /// Kernel marks the byte 0x0..0xff; practical window is ~0x3d..0x64
+    /// and 0x64 (100%) is what the kernel writes when routing to the
+    /// internal speaker.
     speaker_volume: u8 = 0,
     microphone_volume: u8 = 0,
     audio_enable_bits: u8 = 0,
@@ -600,139 +601,6 @@ pub const BtInputReport = extern struct {
     }
 };
 
-/// Decoded controller state.
-pub const InputState = struct {
-    left_stick: struct { x: u8, y: u8 },
-    right_stick: struct { x: u8, y: u8 },
-    left_trigger: u8,
-    right_trigger: u8,
-    square: bool,
-    cross: bool,
-    circle: bool,
-    triangle: bool,
-    l1: bool,
-    r1: bool,
-    l2: bool,
-    r2: bool,
-    create: bool,
-    options: bool,
-    l3: bool,
-    r3: bool,
-    ps: bool,
-    touchpad: bool,
-    mic_mute: bool,
-    fn1: bool,
-    fn2: bool,
-    left_paddle: bool,
-    right_paddle: bool,
-    hat: Hat,
-    gyro: [3]f32, // degrees per second
-    accel: [3]f32, // g
-    sensor_timestamp: u32,
-    touch: [2]struct { active: bool, id: u8, x: u12, y: u12 },
-    battery_capacity: u8, // 0..100
-    battery_status: BatteryStatus,
-    headphone: bool,
-    microphone: bool,
-    mic_mute_led: bool,
-};
-
-/// Decode the common 63-byte input payload into a high-level state.
-pub fn decodeInput(report: *const InputReportCommon) InputState {
-    const b0 = report.buttons0;
-    const b1 = report.buttons1;
-    const b2 = report.buttons2;
-    const hat = b0 & Buttons0.HAT_SWITCH;
-    const cap = report.status0 & Status0.BATTERY_CAPACITY;
-    const charging = (report.status0 & Status0.CHARGING) >> Status0.CHARGING_SHIFT;
-    const touch0: TouchPoint = .{
-        .contact = report.touch0_contact,
-        .x_lo = report.touch0_x_lo,
-        .nibble = report.touch0_nibble,
-        .y_hi = report.touch0_y_hi,
-    };
-    const touch1: TouchPoint = .{
-        .contact = report.touch1_contact,
-        .x_lo = report.touch1_x_lo,
-        .nibble = report.touch1_nibble,
-        .y_hi = report.touch1_y_hi,
-    };
-    const gyro_x = std.mem.readInt(i16, &.{ report.gyro_x_lo, report.gyro_x_hi }, .little);
-    const gyro_y = std.mem.readInt(i16, &.{ report.gyro_y_lo, report.gyro_y_hi }, .little);
-    const gyro_z = std.mem.readInt(i16, &.{ report.gyro_z_lo, report.gyro_z_hi }, .little);
-    const accel_x = std.mem.readInt(i16, &.{ report.accel_x_lo, report.accel_x_hi }, .little);
-    const accel_y = std.mem.readInt(i16, &.{ report.accel_y_lo, report.accel_y_hi }, .little);
-    const accel_z = std.mem.readInt(i16, &.{ report.accel_z_lo, report.accel_z_hi }, .little);
-    const sensor_timestamp = std.mem.readInt(u32, &.{
-        report.sensor_timestamp_0,
-        report.sensor_timestamp_1,
-        report.sensor_timestamp_2,
-        report.sensor_timestamp_3,
-    }, .little);
-    return .{
-        .left_stick = .{ .x = report.left_stick_x, .y = report.left_stick_y },
-        .right_stick = .{ .x = report.right_stick_x, .y = report.right_stick_y },
-        .left_trigger = report.left_trigger,
-        .right_trigger = report.right_trigger,
-        .square = b0 & Buttons0.SQUARE != 0,
-        .cross = b0 & Buttons0.CROSS != 0,
-        .circle = b0 & Buttons0.CIRCLE != 0,
-        .triangle = b0 & Buttons0.TRIANGLE != 0,
-        .l1 = b1 & Buttons1.L1 != 0,
-        .r1 = b1 & Buttons1.R1 != 0,
-        .l2 = b1 & Buttons1.L2 != 0,
-        .r2 = b1 & Buttons1.R2 != 0,
-        .create = b1 & Buttons1.CREATE != 0,
-        .options = b1 & Buttons1.OPTIONS != 0,
-        .l3 = b1 & Buttons1.L3 != 0,
-        .r3 = b1 & Buttons1.R3 != 0,
-        .ps = b2 & Buttons2.PS_HOME != 0,
-        .touchpad = b2 & Buttons2.TOUCHPAD != 0,
-        .mic_mute = b2 & Buttons2.MIC_MUTE != 0,
-        .fn1 = b2 & EdgeButtons.FN1 != 0,
-        .fn2 = b2 & EdgeButtons.FN2 != 0,
-        .left_paddle = b2 & EdgeButtons.LEFT_PADDLE != 0,
-        .right_paddle = b2 & EdgeButtons.RIGHT_PADDLE != 0,
-        .hat = hat_switch[hat],
-        .gyro = .{
-            @as(f32, @floatFromInt(gyro_x)) / @as(f32, GYRO_RES_PER_DEG_S),
-            @as(f32, @floatFromInt(gyro_y)) / @as(f32, GYRO_RES_PER_DEG_S),
-            @as(f32, @floatFromInt(gyro_z)) / @as(f32, GYRO_RES_PER_DEG_S),
-        },
-        .accel = .{
-            @as(f32, @floatFromInt(accel_x)) / @as(f32, ACC_RES_PER_G),
-            @as(f32, @floatFromInt(accel_y)) / @as(f32, ACC_RES_PER_G),
-            @as(f32, @floatFromInt(accel_z)) / @as(f32, ACC_RES_PER_G),
-        },
-        .sensor_timestamp = sensor_timestamp,
-        .touch = .{
-            .{
-                .active = touch0.active(),
-                .id = touch0.id(),
-                .x = touch0.x(),
-                .y = touch0.y(),
-            },
-            .{
-                .active = touch1.active(),
-                .id = touch1.id(),
-                .x = touch1.x(),
-                .y = touch1.y(),
-            },
-        },
-        .battery_capacity = switch (charging) {
-            // Kernel mapping: 0 discharging / 1 charging -> data*10+5 %;
-            // 0x2 full -> 100%; anything else (not-charging, failure) -> 0%.
-            0x0, 0x1 => @min(cap * 10 + 5, 100),
-            0x2 => 100,
-            else => 0,
-        },
-        .battery_status = @enumFromInt(charging),
-        .headphone = report.status1 & Status1.HP_DETECT != 0,
-        .microphone = report.status1 & Status1.MIC_DETECT != 0,
-        .mic_mute_led = report.status1 & Status1.MIC_MUTE != 0,
-    };
-}
-
 // ---------------------------------------------------------------------------
 // Compile-time size checks
 // ---------------------------------------------------------------------------
@@ -881,41 +749,4 @@ test "touch point decoding" {
 
     const inactive = TouchPoint{ .contact = 0x85, .x_lo = 0, .nibble = 0, .y_hi = 0 };
     try std.testing.expect(!inactive.active());
-}
-
-test "input state decoding" {
-    var common: InputReportCommon = std.mem.zeroes(InputReportCommon);
-    common.left_stick_x = 128;
-    common.left_trigger = 64;
-    common.buttons0 = Buttons0.CIRCLE | 2; // hat = 2 (east)
-    common.buttons1 = Buttons1.L1 | Buttons1.OPTIONS;
-    common.buttons2 = Buttons2.PS_HOME | EdgeButtons.LEFT_PADDLE;
-    common.gyro_x_lo = 0x00;
-    common.gyro_x_hi = 0x04; // 1024 little-endian
-    common.accel_x_lo = 0x00;
-    common.accel_x_hi = 0x20; // 8192 little-endian
-    common.sensor_timestamp_0 = 0x78;
-    common.sensor_timestamp_1 = 0x56;
-    common.sensor_timestamp_2 = 0x34;
-    common.sensor_timestamp_3 = 0x12;
-    common.status0 = 5 | (@as(u8, 1) << 4); // 50% + charging
-    common.status1 = Status1.HP_DETECT | Status1.MIC_MUTE;
-
-    const state = decodeInput(&common);
-    try std.testing.expectEqual(@as(u8, 128), state.left_stick.x);
-    try std.testing.expectEqual(@as(u8, 64), state.left_trigger);
-    try std.testing.expect(state.circle);
-    try std.testing.expect(state.l1);
-    try std.testing.expect(state.options);
-    try std.testing.expect(state.ps);
-    try std.testing.expect(state.left_paddle);
-    try std.testing.expectEqual(@as(i2, 1), state.hat.x);
-    try std.testing.expectEqual(@as(i2, 0), state.hat.y);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.gyro[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.accel[0], 0.001);
-    try std.testing.expectEqual(@as(u32, 0x12345678), state.sensor_timestamp);
-    try std.testing.expectEqual(@as(u8, 55), state.battery_capacity); // 5*10+5
-    try std.testing.expectEqual(BatteryStatus.charging, state.battery_status);
-    try std.testing.expect(state.headphone);
-    try std.testing.expect(state.mic_mute_led);
 }

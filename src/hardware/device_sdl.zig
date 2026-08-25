@@ -58,10 +58,10 @@ pub const Device = struct {
     pub fn writeReport(self: *Device, report: *const ds.UsbOutputReport) Error!void {
         const handle = self.handle orelse return error.DeviceNotFound;
         switch (self.bus) {
-            .usb => return self.writeBytes(handle, std.mem.asBytes(report)),
+            .usb => return writeBytes(handle, std.mem.asBytes(report)),
             .bluetooth => {
                 var bt_report = ds.BtOutputReport.fromUsb(report, self.bt_sequence);
-                try self.writeBytes(handle, std.mem.asBytes(&bt_report));
+                try writeBytes(handle, std.mem.asBytes(&bt_report));
                 self.bt_sequence = (self.bt_sequence + 1) & 0x0F;
             },
         }
@@ -77,8 +77,7 @@ pub const Device = struct {
     }
 
     /// Writes one complete report through SDL HIDAPI.
-    fn writeBytes(self: *const Device, handle: *c.SDL_hid_device, bytes: []const u8) Error!void {
-        _ = self;
+    fn writeBytes(handle: *c.SDL_hid_device, bytes: []const u8) Error!void {
         const written = c.SDL_hid_write(handle, @ptrCast(bytes.ptr), bytes.len);
         if (written != bytes.len) return error.WriteFailed;
     }

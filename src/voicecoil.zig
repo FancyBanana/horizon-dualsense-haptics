@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Voice-coil audio haptics: telemetry -> per-channel intensity/frequency
-//! for the DualSense USB audio stream, plus HID report flags that route
-//! haptics through the audio path.
+//! Voice-coil PCM haptics: telemetry -> per-channel intensity/frequency for
+//! the DualSense USB audio stream. The only HID-report state involved is
+//! `useVoiceCoilHaptics`, which sets no flag bits — it just marks the
+//! actuator-mode choice so rumble emulation cannot be requested on the same
+//! report. The waveforms travel solely on the RL/RR audio channels; their
+//! level is the PCM amplitude.
 
 const std = @import("std");
 const parser = @import("fh5_packet_parser.zig");
@@ -17,13 +20,12 @@ pub const AudioCue = struct {
 };
 
 /// Configures the HID report for PCM haptics: declares the voice-coil
-/// actuator mode (conflicts with rumble emulation at `toReport` time) and
-/// boosts the internal speaker so effect cues are audible. The haptic
-/// waveforms themselves travel on the RL/RR audio channels, not here.
+/// actuator mode so rumble emulation cannot steal the grip coils. No other
+/// HID state matters here — the waveforms ride the RL/RR channels and the
+/// speaker routing/volume bytes have no effect on them.
 pub fn configureAudioReport(motor_mode: config.MotorMode, builder: *ds.ReportBuilder) void {
     if (motor_mode != .audio) return;
     builder.useVoiceCoilHaptics();
-    builder.boostInternalSpeaker();
 }
 
 /// Publishes per-side audio cues; called even while HID is disconnected.

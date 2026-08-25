@@ -3,7 +3,7 @@
 //! High-level DualSense output API: composable report builder and adaptive
 //! trigger effect constructors.
 //!
-//! Developers describe the *desired effect* ("rumble left motor at 60%",
+//! Developers describe the *desired effect* ("rumble the left coil at 60%",
 //! "rigid trigger that resists more as it is pulled"); this module picks the
 //! flag bits, packet fields, and wire encodings.  The raw protocol reference
 //! (report layouts, flag constants, input reports) lives in `dualsense.zig`
@@ -24,7 +24,7 @@
 //! The grip voice coils have one hardware path and two drivers (rumble
 //! emulation bytes vs RL/RR PCM from the USB audio interface); requesting
 //! both on one builder fails at `toReport` time with
-//! `error.ConflictingRumbleMode`. See `docs/dualsense-internals.md`.
+//! `error.ConflictingRumbleMode`.
 //!
 
 const std = @import("std");

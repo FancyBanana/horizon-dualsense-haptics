@@ -2,14 +2,15 @@
 
 //! Audio-based DualSense haptics via SDL3.
 //!
-//! The controller's voice-coil actuators are driven by its USB audio stream
-//! (4 channels at 48 kHz / 16-bit). The DualSense exposes itself as a 4-channel
-//! device where the front channels are the built-in speaker and the *rear*
-//! channels are the haptic motors: FL=left speaker, FR=right speaker,
-//! RL=left haptic, RR=right haptic. This module streams synthesized PCM to the
+//! The controller's grip voice coils are driven by its USB audio stream
+//! (4 channels at 48 kHz / 16-bit): the front channels feed the built-in
+//! speaker and the *rear* channels are the haptic actuators —
+//! FL=left speaker, FR=right speaker, RL=left haptic, RR=right haptic.
+//! This module streams synthesized PCM to the
 //! controller over SDL3 audio (PipeWire/ALSA on Linux, WASAPI on Windows), so
 //! the telemetry loop only has to publish per-channel intensities and the
-//! renderer produces the waveform.
+//! renderer produces the waveform. PCM amplitude is the only haptic level
+//! control; the HID report has no haptic volume register.
 //!
 //! Rendering pipeline per channel: clamp -> gamma low-boost -> attack/release
 //! envelope -> textured harmonic oscillator -> clamp.
@@ -165,8 +166,8 @@ pub const AudioHaptics = struct {
             }
             dst[i * 4 + 0] = v[0]; // FL: left speaker, muted
             dst[i * 4 + 1] = v[1]; // FR: right speaker, muted
-            dst[i * 4 + 2] = v[2]; // RL: left haptic motor
-            dst[i * 4 + 3] = v[3]; // RR: right haptic motor
+            dst[i * 4 + 2] = v[2]; // RL: left haptic actuator
+            dst[i * 4 + 3] = v[3]; // RR: right haptic actuator
         }
 
         const bytes = n_frames * FRAME_BYTES;

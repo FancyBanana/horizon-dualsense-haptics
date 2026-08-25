@@ -39,10 +39,12 @@ flowchart LR
     AudioDevice --> USBAudio["DualSense USB audio"]
 ```
 
-The selected motor backend determines how the mapped effects reach the
-controller. Simple mode uses classic HID rumble bytes and works over USB or
-Bluetooth. Audio mode sends synthesized four-channel USB audio; HID reports
-are still used for trigger effects and audio routing flags.
+The selected backend determines how haptics reach the controller. Simple
+mode uses HID rumble-emulation bytes (firmware synthesizes the waveform on
+the grip coils) and works over USB or Bluetooth. Audio mode renders PCM into
+the rear channels of the controller's USB audio interface, which are wired to
+the grip haptic actuators; HID reports are then only used for trigger effects
+and the actuator-mode selection.
 
 The lightbar follows engine RPM from green at low RPM to red at the rev limit.
 The five player-indicator LEDs show a rough gear gauge ordered by increasing

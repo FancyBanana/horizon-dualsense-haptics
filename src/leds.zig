@@ -21,7 +21,7 @@ pub fn updateLeds(cfg: *const config.HapticsConfig, frame: *const parser.Horizon
     }
 
     if (cfg.leds_enabled) {
-        builder.setLedBrightness(255);
+        builder.setLedBrightness(0); // 0 = brightest on the 0..2 firmware scale
         builder.setPlayerLeds(gearLedMask(frame.Gear));
     }
 }
@@ -84,6 +84,7 @@ test "lightbar follows rpm and gear LEDs" {
         ds.FLAG2_LED_BRIGHTNESS_CONTROL_ENABLE,
         report.common.valid_flag2,
     );
+    try std.testing.expectEqual(@as(u8, 0), report.common.led_brightness); // 0 = brightest
 
     frame.CurrentEngineRpm = 8000;
     frame.Gear = 7;
