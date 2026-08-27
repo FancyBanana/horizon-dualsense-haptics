@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! High-level DualSense output API: composable report builder and adaptive
-//! trigger effect constructors.
+//! High-level DualSense API: composable output-report builder, adaptive
+//! trigger effect constructors, and input decoding (`decodeInput` ->
+//! `InputState`).
 //!
 //! Developers describe the *desired effect* ("rumble the left coil at 60%",
 //! "rigid trigger that resists more as it is pulled"); this module picks the
 //! flag bits, packet fields, and wire encodings.  The raw protocol reference
-//! (report layouts, flag constants, input reports) lives in `dualsense.zig`
+//! (report layouts, flag constants) lives in `dualsense.zig`
 //! and is re-exported here so a single import covers both layers:
 //!
 //! ```zig
@@ -47,6 +48,10 @@ pub const PLAYER_LED_PATTERNS = proto.PLAYER_LED_PATTERNS;
 pub const MuteLedMode = proto.MuteLedMode;
 pub const EffectMode = proto.EffectMode;
 pub const OutputReportCommon = proto.OutputReportCommon;
+pub const InputReportCommon = proto.InputReportCommon;
+pub const UsbInputReport = proto.UsbInputReport;
+pub const BtInputReport = proto.BtInputReport;
+pub const USB_INPUT_REPORT_SIZE = proto.USB_INPUT_REPORT_SIZE;
 pub const UsbOutputReport = proto.UsbOutputReport;
 pub const FullUsbOutputReport = proto.FullUsbOutputReport;
 pub const BtOutputReport = proto.BtOutputReport;
@@ -136,42 +141,73 @@ pub const TriggerEffect = struct {
         return e;
     }
 
-    /// Release the trigger actuator (the neutral/off effect).
+    /// Release the trigger actuator and let it return to its resting state.
+    /// The neutral/off effect: send this when no effect should be active
+    /// (menu, paused, effect ended) so held resistance/vibration does not
+    /// linger on the actuator.
     pub fn off() TriggerEffect {
         return init(.reset, &.{0});
     }
 
-    /// Uniform resistance over the whole pull; `force` is 0..255 (0 is low
-    /// resistance, not off).  Use `rigidNorm` for 0..1 input.
+    /// Ranges: `force` 0..255.
+    ///
+    /// Constant spring: uniform resistance across the entire pull path.
+    /// The trigger feels heavier everywhere but still travels fully; there
+    /// is no break point or texture. `force` is 0..255 device units where 0
+    /// is a light (not zero) resistance. Use for hydraulic pedals, stiff
+    /// levers, or any "heavier spring" feel. For a wall that stops travel,
+    /// see `weapon`; for weight that grows as you pull, see `rigidZones`
+    /// with `risingZones`.
     pub fn rigid(force: u8) TriggerEffect {
         return init(.rigid, &.{ 0, force });
     }
 
-    /// Uniform resistance scaled from a normalized 0..1 force.
+    /// Constant spring, from a normalized force: same feel as `rigid`,
+    /// with 0..1 instead of raw device units (0 = light resistance, 1 =
+    /// maximum). Preferred over `rigid` for new code.
     pub fn rigidNorm(force_norm: f32) TriggerEffect {
         return rigid(forceFromNorm(force_norm));
     }
 
-    /// Single-point vibration near the resting position; `freq` and `amp`
-    /// are 0..255 device units.  Good for ABS-style buzzes and shift kicks.
+    /// Ranges: `freq` 0..255, `amp` 0..255.
+    ///
+    /// Buzz at one point near the resting position of the pull.
+    /// Higher frequencies feel finer/grittier, lower ones chunkier. Classic uses: ABS lockup feedback, gear-shift kick,
+    /// impact rumble while the trigger is only lightly held. For vibration
+    /// spread over a section of the pull, see `vibrateZones`.
     pub fn vibrate(freq: u8, amp: u8) TriggerEffect {
         return init(.vibrate, &.{ freq, amp });
     }
 
-    /// Vibration from a normalized 0..1 frequency and amplitude.
+    /// Point buzz near the resting position, from normalized values: same
+    /// feel as `vibrate`, with frequency and amplitude on a 0..1 scale
+    /// (1 = fastest/strongest the actuator offers).
     pub fn vibrateNorm(freq_norm: f32, amp_norm: f32) TriggerEffect {
         return vibrate(forceFromNorm(freq_norm), forceFromNorm(amp_norm));
     }
 
-    /// Per-zone resistance; 10 levels, 0 = inactive, 1..8 = strength.  Build
-    /// the map with `zoneBand`, `zoneRange`, or `risingZones`.
+    /// Ranges: each of the 10 `zones` entries 0..8 (0 = free travel).
+    ///
+    /// Fully custom resistance profile along the pull. The trigger path is
+    /// split into 10 zones (0 = resting, 9 = fully pressed); each zone gets
+    /// strength 1..8, with 0 leaving that stretch of travel free. Build the
+    /// map with `zoneBand` (wall from a point), `zoneRange` (resistance in
+    /// one stretch), or `risingZones` (progressive draw weight, e.g. a
+    /// brake pedal that firms up with depth).
     pub fn rigidZones(zones: [10]u8) TriggerEffect {
         var e = init(.rigid_zones, &.{});
         e.data[1..7].* = packZones(zones);
         return e;
     }
 
-    /// Per-zone vibration; same zone map semantics plus a vibration frequency.
+    /// Ranges: each of the 10 `zones` entries 0..8 (0 = inactive), `freq`
+    /// 0..255.
+    ///
+    /// Buzzing confined to part of the pull: same 10-zone map as
+    /// `rigidZones`, but active zones vibrate instead of resisting. This is
+    /// the "automatic gun" mode -
+    /// hold the trigger in the buzzing range for continuous fire feel.
+    /// Also used for rev-limiters (buzz at the top of the pull) and wheelspin.
     pub fn vibrateZones(zones: [10]u8, freq: u8) TriggerEffect {
         var e = rigidZones(zones);
         e.data[0] = @intFromEnum(EffectMode.vibrate_zones);
@@ -179,21 +215,37 @@ pub const TriggerEffect = struct {
         return e;
     }
 
-    /// Resistance starting at `position` (0..9) with strength 1..8 applied
-    /// to every zone from there to the fully pressed end.
+    /// Ranges: `position` 0..9, `strength` 1..8 (0 = off).
+    ///
+    /// Two-stage trigger: free travel until zone `position`, then uniform
+    /// strength-`strength` resistance from there to full press. Feels like
+    /// a camera shutter or safety catch - slack first, then a wall. Unlike
+    /// `weapon` the wall resists rather than hard-stops travel, and unlike
+    /// `rigid` the first part of the pull stays loose.
     pub fn feedback(position: u8, strength: u8) TriggerEffect {
         if (strength == 0) return off();
         return rigidZones(zoneBand(position, strength));
     }
 
-    /// Feedback from a normalized 0..1 pull depth and strength.
+    /// Two-stage trigger (slack, then wall), from normalized values: same
+    /// feel as `feedback`. `position_norm` is the pull depth (0..1) where
+    /// resistance kicks in; `strength_norm` scales the wall (0 releases the
+    /// actuator entirely, like `off`).
     pub fn feedbackNorm(position_norm: f32, strength_norm: f32) TriggerEffect {
         return feedback(zoneFromNorm(position_norm), levelFromNorm(strength_norm));
     }
 
-    /// Weapon-trigger feel: hard stop between `start` and `end` positions
-    /// (0..9 zone indices) with `strength` 1..8.
+    /// Ranges: `start`/`end` 0..9 (recommended: `start` 2..7, `end` up to
+    /// 8), `strength` 1..8; 0 falls back to `off`.
+    ///
+    /// Semi-auto gun ("SemiAutomaticGun"): crisp break point like a real
+    /// firearm trigger. Free travel to zone `start`, then travel stops dead
+    /// in the `start`..`end` band at fixed `strength` (1..8) - one shot per
+    /// pull. The stop is a hard limit, not progressive resistance (use
+    /// `bow` when it should give gradually, `feedback` when it should just
+    /// get heavy).
     pub fn weapon(start: u8, end: u8, strength: u8) TriggerEffect {
+        if (strength == 0) return off();
         var e = init(.weapon, &.{});
         const mask = startStopZones(start, end);
         e.data[1] = @truncate(mask);
@@ -202,14 +254,23 @@ pub const TriggerEffect = struct {
         return e;
     }
 
-    /// Weapon feel from normalized 0..1 positions and strength.
+    /// Crisp semi-auto break point, from normalized values: same feel as
+    /// `weapon`. Positions are pull depth 0..1; `strength_norm` is clamped
+    /// to at least level 1 because a zero-strength break point is meaningless.
     pub fn weaponNorm(start_norm: f32, end_norm: f32, strength_norm: f32) TriggerEffect {
         return weapon(zoneFromNorm(start_norm), zoneFromNorm(end_norm), @max(levelFromNorm(strength_norm), 1));
     }
 
-    /// Bow feel: elastic resistance between `start` and `end` (0..9 zone
-    /// indices) with `strength` and release `snap_force` (both 1..8).
+    /// Ranges: `start`/`end` 0..9 (recommended: `end` up to 8),
+    /// `strength`/`snap_force` 1..8; either 0 falls back to `off`.
+    ///
+    /// Drawing a bowstring: free travel until zone `start`, then elastic
+    /// resistance grows toward zone `end`. `strength` (1..8) sets the draw
+    /// weight at full draw; `snap_force` (1..8) sets how violently the
+    /// string snaps home on release. Distinct from `weapon`: the stop gives
+    /// progressively instead of being absolute, and release has a kick.
     pub fn bow(start: u8, end: u8, strength: u8, snap_force: u8) TriggerEffect {
+        if (strength == 0 or snap_force == 0) return off();
         var e = init(.bow, &.{});
         const mask = startStopZones(start, end);
         const pair = forcePair(strength -| 1, snap_force -| 1);
@@ -219,7 +280,9 @@ pub const TriggerEffect = struct {
         return e;
     }
 
-    /// Bow feel from normalized 0..1 positions, strength, and snap force.
+    /// Bowstring draw with release snap, from normalized values: same feel
+    /// as `bow`. Positions are pull depth 0..1; draw weight and snap force
+    /// are 0..1, each clamped to at least level 1.
     pub fn bowNorm(start_norm: f32, end_norm: f32, strength_norm: f32, snap_force_norm: f32) TriggerEffect {
         return bow(
             zoneFromNorm(start_norm),
@@ -229,9 +292,22 @@ pub const TriggerEffect = struct {
         );
     }
 
-    /// Galloping rhythm between `start` and `end`: two alternating foot
-    /// strengths and a repetition frequency (all 0..255).
+    /// Ranges: `start`/`end` 0..9 (zone indices, `start` < `end`),
+    /// `first_foot` 0..6, `second_foot` `first_foot`+1..7, `frequency`
+    /// 0..7 (3-bit; see below).
+    ///
+    /// Sony's "galloping" effect (0x23): a time-clocked two-foot gait
+    /// oscillator inside the `start`..`end` band. The two "feet" are PHASE
+    /// POSITIONS within the oscillation cycle (not strengths): the actuator
+    /// steps first_foot -> second_foot -> first_foot at `frequency` hertz,
+    /// producing a coarse ratchet-like scrape under the finger - horse
+    /// hooves on uneven ground in PS5 titles. Per Nielk1's reference:
+    /// only low frequency values are discernible, and the effect is not
+    /// guaranteed on future firmware. Unlike `machine`, which alternates
+    /// two STRENGTHS with an explicit period, galloping alternates two
+    /// CYCLE POSITIONS at a fixed rate.
     pub fn galloping(start: u8, end: u8, first_foot: u8, second_foot: u8, frequency: u8) TriggerEffect {
+        if (frequency == 0) return off();
         var e = init(.galloping, &.{});
         const mask = startStopZones(start, end);
         const pair = forcePair(second_foot, first_foot);
@@ -242,20 +318,42 @@ pub const TriggerEffect = struct {
         return e;
     }
 
-    /// Galloping from normalized 0..1 positions, foot strengths, and rate.
+    /// Galloping gait oscillator, from normalized values: same feel as
+    /// `galloping`. Positions are pull depth 0..1; the feet scale to their
+    /// valid 3-bit phase ranges (first 0..6, second kept above first);
+    /// frequency scales to the discernible 0..7 range.
     pub fn gallopingNorm(start_norm: f32, end_norm: f32, first_foot_norm: f32, second_foot_norm: f32, frequency_norm: f32) TriggerEffect {
+        const scale6 = struct {
+            fn f(n: f32) u8 {
+                return @intFromFloat(@round(clamp01(n) * 6.0));
+            }
+        }.f;
+        const scale7 = struct {
+            fn f(n: f32) u8 {
+                return @intFromFloat(@round(clamp01(n) * 7.0));
+            }
+        }.f;
+        const first = scale6(first_foot_norm);
+        const second = @max(scale7(second_foot_norm), first + 1);
         return galloping(
             zoneFromNorm(start_norm),
             zoneFromNorm(end_norm),
-            forceFromNorm(first_foot_norm),
-            forceFromNorm(second_foot_norm),
-            forceFromNorm(frequency_norm),
+            first,
+            second,
+            scale7(frequency_norm),
         );
     }
 
-    /// Machine effect alternating between `strength_a` and `strength_b`
-    /// (0..7) at `frequency` and `period` (0..255 device units).
+    /// Ranges: `start`/`end` 0..9, `strength_a`/`strength_b` 0..7 (0
+    /// disables one side of the cycle), `frequency`/`period` 0..255.
+    ///
+    /// Mechanical chugging: alternates between two resistance levels inside
+    /// the `start`..`end` band. Unlike `vibrateZones`' continuous buzz this
+    /// is a discrete pulse train - jackhammer, machine-gun bolt cycling,
+    /// ratchet clicks. Unlike `galloping` the pulses run on a CLOCK
+    /// (frequency x period), independent of how fast you pull.
     pub fn machine(start: u8, end: u8, strength_a: u8, strength_b: u8, frequency: u8, period: u8) TriggerEffect {
+        if (frequency == 0) return off();
         var e = init(.machine, &.{});
         const mask = startStopZones(start, end);
         const pair = forcePair(strength_a, strength_b);
@@ -267,8 +365,10 @@ pub const TriggerEffect = struct {
         return e;
     }
 
-    /// Machine effect from normalized 0..1 positions, strengths, rate, and
-    /// period.
+    /// Mechanical pulse train, from normalized values: same feel as
+    /// `machine`. Positions are pull depth 0..1; strengths scale to the
+    /// mode's 0..7 levels (0 disables one side of the cycle), rate and
+    /// period are 0..1.
     pub fn machineNorm(start_norm: f32, end_norm: f32, strength_a_norm: f32, strength_b_norm: f32, frequency_norm: f32, period_norm: f32) TriggerEffect {
         const scale7 = struct {
             fn f(n: f32) u8 {
@@ -285,10 +385,12 @@ pub const TriggerEffect = struct {
         );
     }
 
-    /// Section resistance (community `Simple_Weapon`, mode 0x02): resistance
-    /// between raw `start_position` and `end_position` bytes at `strength`.
-    /// Unlike the official zone effects, positions are raw bytes here, not
-    /// 0..9 zone indices (e.g. reWASD "full press" uses 144..160).
+    /// Simplified section resistance (community `Simple_Weapon`, mode
+    /// 0x02): uniform `strength` between two positions given as RAW bytes,
+    /// not 0..9 zone indices - the odd one out among the effects (e.g.
+    /// reWASD's "full press" preset uses 144..160). Escape hatch for
+    /// compatibility with tools/presets that speak raw bytes; prefer
+    /// `feedback` or `weapon` for new code.
     pub fn section(start_position: u8, end_position: u8, strength: u8) TriggerEffect {
         return init(.section, &.{ start_position, end_position, strength });
     }
@@ -526,8 +628,11 @@ pub const ReportBuilder = struct {
         self.setPlayerLeds(PLAYER_LED_PATTERNS[@min(player_number, PLAYER_LED_PATTERNS.len - 1)]);
     }
 
-    /// Brightness of the player-indicator LEDs. Firmware scale is 0..2
-    /// (dualsensectl rejects values above 2).
+    /// Brightness of the player-indicator LEDs. Firmware scale is 0..2:
+    /// 0 = high (brightest), 1 = medium, 2 = low (dimmest); dualsensectl
+    /// rejects values above 2. Level only - has no effect unless a player
+    /// LED pattern is also set (`setPlayerLeds`/`setPlayerLedsPattern`),
+    /// and does not affect the RGB lightbar.
     pub fn setLedBrightness(self: *ReportBuilder, brightness: u8) void {
         self.common.valid_flag1 |= Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
         self.common.valid_flag2 |= FLAG2_LED_BRIGHTNESS_CONTROL_ENABLE;
@@ -632,6 +737,142 @@ pub const ReportBuilder = struct {
 /// Normalized volume (0..1) scaled to a device-specific maximum byte.
 fn scaleToMax(norm: f32, max: u8) u8 {
     return @intFromFloat(@round(clamp01(norm) * @as(f32, max)));
+}
+
+// ---------------------------------------------------------------------------
+// Input decoding
+// ---------------------------------------------------------------------------
+
+pub const InputState = struct {
+    left_stick: struct { x: u8, y: u8 },
+    right_stick: struct { x: u8, y: u8 },
+    left_trigger: u8,
+    right_trigger: u8,
+    square: bool,
+    cross: bool,
+    circle: bool,
+    triangle: bool,
+    l1: bool,
+    r1: bool,
+    l2: bool,
+    r2: bool,
+    create: bool,
+    options: bool,
+    l3: bool,
+    r3: bool,
+    ps: bool,
+    touchpad: bool,
+    mic_mute: bool,
+    fn1: bool,
+    fn2: bool,
+    left_paddle: bool,
+    right_paddle: bool,
+    hat: proto.Hat,
+    gyro: [3]f32, // degrees per second
+    accel: [3]f32, // g
+    sensor_timestamp: u32,
+    touch: [2]struct { active: bool, id: u8, x: u12, y: u12 },
+    battery_capacity: u8, // 0..100
+    battery_status: proto.BatteryStatus,
+    headphone: bool,
+    microphone: bool,
+    mic_mute_led: bool,
+};
+
+/// Decode the common 63-byte input payload into a high-level state.
+pub fn decodeInput(report: *const proto.InputReportCommon) InputState {
+    const b0 = report.buttons0;
+    const b1 = report.buttons1;
+    const b2 = report.buttons2;
+    const hat = b0 & proto.Buttons0.HAT_SWITCH;
+    const cap = report.status0 & proto.Status0.BATTERY_CAPACITY;
+    const charging = (report.status0 & proto.Status0.CHARGING) >> proto.Status0.CHARGING_SHIFT;
+    const touch0: proto.TouchPoint = .{
+        .contact = report.touch0_contact,
+        .x_lo = report.touch0_x_lo,
+        .nibble = report.touch0_nibble,
+        .y_hi = report.touch0_y_hi,
+    };
+    const touch1: proto.TouchPoint = .{
+        .contact = report.touch1_contact,
+        .x_lo = report.touch1_x_lo,
+        .nibble = report.touch1_nibble,
+        .y_hi = report.touch1_y_hi,
+    };
+    const gyro_x = std.mem.readInt(i16, &.{ report.gyro_x_lo, report.gyro_x_hi }, .little);
+    const gyro_y = std.mem.readInt(i16, &.{ report.gyro_y_lo, report.gyro_y_hi }, .little);
+    const gyro_z = std.mem.readInt(i16, &.{ report.gyro_z_lo, report.gyro_z_hi }, .little);
+    const accel_x = std.mem.readInt(i16, &.{ report.accel_x_lo, report.accel_x_hi }, .little);
+    const accel_y = std.mem.readInt(i16, &.{ report.accel_y_lo, report.accel_y_hi }, .little);
+    const accel_z = std.mem.readInt(i16, &.{ report.accel_z_lo, report.accel_z_hi }, .little);
+    const sensor_timestamp = std.mem.readInt(u32, &.{
+        report.sensor_timestamp_0,
+        report.sensor_timestamp_1,
+        report.sensor_timestamp_2,
+        report.sensor_timestamp_3,
+    }, .little);
+    return .{
+        .left_stick = .{ .x = report.left_stick_x, .y = report.left_stick_y },
+        .right_stick = .{ .x = report.right_stick_x, .y = report.right_stick_y },
+        .left_trigger = report.left_trigger,
+        .right_trigger = report.right_trigger,
+        .square = b0 & proto.Buttons0.SQUARE != 0,
+        .cross = b0 & proto.Buttons0.CROSS != 0,
+        .circle = b0 & proto.Buttons0.CIRCLE != 0,
+        .triangle = b0 & proto.Buttons0.TRIANGLE != 0,
+        .l1 = b1 & proto.Buttons1.L1 != 0,
+        .r1 = b1 & proto.Buttons1.R1 != 0,
+        .l2 = b1 & proto.Buttons1.L2 != 0,
+        .r2 = b1 & proto.Buttons1.R2 != 0,
+        .create = b1 & proto.Buttons1.CREATE != 0,
+        .options = b1 & proto.Buttons1.OPTIONS != 0,
+        .l3 = b1 & proto.Buttons1.L3 != 0,
+        .r3 = b1 & proto.Buttons1.R3 != 0,
+        .ps = b2 & proto.Buttons2.PS_HOME != 0,
+        .touchpad = b2 & proto.Buttons2.TOUCHPAD != 0,
+        .mic_mute = b2 & proto.Buttons2.MIC_MUTE != 0,
+        .fn1 = b2 & proto.EdgeButtons.FN1 != 0,
+        .fn2 = b2 & proto.EdgeButtons.FN2 != 0,
+        .left_paddle = b2 & proto.EdgeButtons.LEFT_PADDLE != 0,
+        .right_paddle = b2 & proto.EdgeButtons.RIGHT_PADDLE != 0,
+        .hat = proto.hat_switch[hat],
+        .gyro = .{
+            @as(f32, @floatFromInt(gyro_x)) / @as(f32, proto.GYRO_RES_PER_DEG_S),
+            @as(f32, @floatFromInt(gyro_y)) / @as(f32, proto.GYRO_RES_PER_DEG_S),
+            @as(f32, @floatFromInt(gyro_z)) / @as(f32, proto.GYRO_RES_PER_DEG_S),
+        },
+        .accel = .{
+            @as(f32, @floatFromInt(accel_x)) / @as(f32, proto.ACC_RES_PER_G),
+            @as(f32, @floatFromInt(accel_y)) / @as(f32, proto.ACC_RES_PER_G),
+            @as(f32, @floatFromInt(accel_z)) / @as(f32, proto.ACC_RES_PER_G),
+        },
+        .sensor_timestamp = sensor_timestamp,
+        .touch = .{
+            .{
+                .active = touch0.active(),
+                .id = touch0.id(),
+                .x = touch0.x(),
+                .y = touch0.y(),
+            },
+            .{
+                .active = touch1.active(),
+                .id = touch1.id(),
+                .x = touch1.x(),
+                .y = touch1.y(),
+            },
+        },
+        .battery_capacity = switch (charging) {
+            // Kernel mapping: 0 discharging / 1 charging -> data*10+5 %;
+            // 0x2 full -> 100%; anything else (not-charging, failure) -> 0%.
+            0x0, 0x1 => @min(cap * 10 + 5, 100),
+            0x2 => 100,
+            else => 0,
+        },
+        .battery_status = @enumFromInt(charging),
+        .headphone = report.status1 & proto.Status1.HP_DETECT != 0,
+        .microphone = report.status1 & proto.Status1.MIC_DETECT != 0,
+        .mic_mute_led = report.status1 & proto.Status1.MIC_MUTE != 0,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -769,7 +1010,7 @@ test "normalized trigger effect constructors match raw encodings" {
     try std.testing.expectEqual((TriggerEffect.bow(0, 9, 4, 2)).data, bw.data);
 
     const gl = TriggerEffect.gallopingNorm(0.0, 1.0, 0.5, 1.0, 0.5);
-    try std.testing.expectEqual((TriggerEffect.galloping(0, 9, 128, 255, 128)).data, gl.data);
+    try std.testing.expectEqual((TriggerEffect.galloping(0, 9, 3, 7, 4)).data, gl.data);
 
     const ma = TriggerEffect.machineNorm(0.0, 1.0, 1.0, 0.0, 0.5, 0.5);
     try std.testing.expectEqual((TriggerEffect.machine(0, 9, 7, 0, 128, 128)).data, ma.data);
@@ -936,4 +1177,41 @@ test "report builder explicit off/reset methods" {
     try std.testing.expectEqual(@intFromEnum(MuteLedMode.off), report.common.mic_light_mode);
     try std.testing.expectEqual(@intFromEnum(EffectMode.reset), report.common.left_trigger_effect[0]);
     try std.testing.expectEqual(@intFromEnum(EffectMode.reset), report.common.right_trigger_effect[0]);
+}
+
+test "input state decoding" {
+    var common: proto.InputReportCommon = std.mem.zeroes(proto.InputReportCommon);
+    common.left_stick_x = 128;
+    common.left_trigger = 64;
+    common.buttons0 = proto.Buttons0.CIRCLE | 2; // hat = 2 (east)
+    common.buttons1 = proto.Buttons1.L1 | proto.Buttons1.OPTIONS;
+    common.buttons2 = proto.Buttons2.PS_HOME | proto.EdgeButtons.LEFT_PADDLE;
+    common.gyro_x_lo = 0x00;
+    common.gyro_x_hi = 0x04; // 1024 little-endian
+    common.accel_x_lo = 0x00;
+    common.accel_x_hi = 0x20; // 8192 little-endian
+    common.sensor_timestamp_0 = 0x78;
+    common.sensor_timestamp_1 = 0x56;
+    common.sensor_timestamp_2 = 0x34;
+    common.sensor_timestamp_3 = 0x12;
+    common.status0 = 5 | (@as(u8, 1) << 4); // 50% + charging
+    common.status1 = proto.Status1.HP_DETECT | proto.Status1.MIC_MUTE;
+
+    const state = decodeInput(&common);
+    try std.testing.expectEqual(@as(u8, 128), state.left_stick.x);
+    try std.testing.expectEqual(@as(u8, 64), state.left_trigger);
+    try std.testing.expect(state.circle);
+    try std.testing.expect(state.l1);
+    try std.testing.expect(state.options);
+    try std.testing.expect(state.ps);
+    try std.testing.expect(state.left_paddle);
+    try std.testing.expectEqual(@as(i2, 1), state.hat.x);
+    try std.testing.expectEqual(@as(i2, 0), state.hat.y);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.gyro[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.accel[0], 0.001);
+    try std.testing.expectEqual(@as(u32, 0x12345678), state.sensor_timestamp);
+    try std.testing.expectEqual(@as(u8, 55), state.battery_capacity); // 5*10+5
+    try std.testing.expectEqual(proto.BatteryStatus.charging, state.battery_status);
+    try std.testing.expect(state.headphone);
+    try std.testing.expect(state.mic_mute_led);
 }
