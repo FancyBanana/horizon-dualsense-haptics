@@ -442,10 +442,93 @@ pub const SpeakerRouting = enum {
     /// Path select 0 (power-on default): left channel -> headphone left,
     /// right channel -> headphone right, internal speaker muted.
     headphone_stereo,
+    /// Path select 1: the left channel feeds both headphone sinks (mono
+    /// headphones); internal speaker muted.
+    mono_headphones,
+    /// Path select 2: left channel on both headphone sinks, right channel
+    /// on the internal speaker.
+    headphones_and_speaker,
     /// Path select 3 (`PATH_SEL_INTERNAL_SPEAKER`): headphone sinks muted,
     /// right channel routed to the internal mono speaker. Pair with max
     /// speaker volume so effect audio is audible on the controller itself.
     internal_speaker,
+};
+
+// ---------------------------------------------------------------------------
+// Friendly value types for builder setters that otherwise take raw bits.
+// ---------------------------------------------------------------------------
+
+/// Named mute targets for `ReportBuilder.setMutes`: the upper nibble of the
+/// power-save/mute control byte (see `PowerSave.*_MUTE`).
+pub const MuteTarget = enum { microphone, speaker, headphones, haptics };
+
+/// Set of mute targets; `true` mutes. Literal syntax: `.{ .speaker = true }`.
+pub const MuteSet = std.enums.EnumFieldStruct(MuteTarget, bool, false);
+
+/// Idle features the controller can power down via the lower nibble of the
+/// power-save/mute control byte (see `PowerSave.TOUCH`..`PowerSave.AUDIO`).
+pub const PowerSaveFeature = enum { touch, motion, haptics, audio };
+
+/// Set of features to power down when idle; literal syntax:
+/// `.{ .motion = true }`.
+pub const PowerSaveSet = std.enums.EnumFieldStruct(PowerSaveFeature, bool, false);
+
+/// Named player-indicator LED patterns (bit 0/bit 4 outer LEDs, bit 2
+/// center). Values mirror `PLAYER_LED_PATTERNS` and dualsensectl's
+/// player-id table.
+pub const PlayerLedPattern = enum(u8) {
+    off = 0x00,
+    center = 0x04, // player 1
+    inner_pair = 0x0A, // player 2
+    center_and_outer_pair = 0x15, // player 3
+    inner_and_outer_pair = 0x1B, // player 4
+    all = 0x1F, // player 5
+    outer_pair = 0x11, // dualsensectl extra pattern 6
+    inner_three = 0x0E, // dualsensectl extra pattern 7
+};
+
+/// Microphone input configuration for `audio_enable_bits` (byte 8): source
+/// force bits 0-1, echo/noise cancel bits 2-3, processing path bits 6-7
+/// (see `Audio.FORCE_*`, `Audio.ECHO_CANCEL`, `Audio.NOISE_CANCEL`,
+/// `Audio.INPUT_PATH_*`). Sink path bits 4-5 are owned by
+/// `setSpeakerRouting` and are preserved.
+pub const MicInput = struct {
+    /// Which physical mic the firmware should use; `.automatic` leaves both
+    /// force bits clear so the firmware picks.
+    source: Source = .automatic,
+    /// Voice-processing path (bits 6-7).
+    processing: Processing = .both,
+    echo_cancel: bool = false,
+    noise_cancel: bool = false,
+
+    pub const Source = enum { automatic, internal, headset };
+    pub const Processing = enum {
+        /// Path 0 (dualsensectl "both"): chat and ASR paths active.
+        both,
+        /// Path 1 (`Audio.INPUT_PATH_CHAT`): voice-chat processing.
+        chat,
+        /// Path 2 (`Audio.INPUT_PATH_ASR`): ASR/raw path.
+        asr,
+    };
+};
+
+/// Speaker preamp gain (bits 0-2 of `audio_control2`, byte 38). Only these
+/// two values are publicly documented - 0 is the power-on default, 0x2 is
+/// the kernel's speaker-on preset (+6 dB, hid-playstation) - so the full
+/// 3-bit range stays reachable through `ReportBuilder.setAudioControl2`.
+pub const SpeakerPreamp = enum(u8) {
+    /// Power-on default, no preamp boost (the kernel's headphone route).
+    off = 0,
+    /// Kernel speaker-on preset: +6 dB.
+    boost_6db = Audio.SP_PREAMP_GAIN_6DB,
+};
+
+/// Player-indicator LED brightness on the controller's inverted 0..2
+/// firmware scale (see `ReportBuilder.setLedBrightness`).
+pub const LedBrightness = enum(u8) {
+    high = 0, // brightest
+    medium = 1,
+    low = 2, // dimmest
 };
 
 /// Errors returned by `ReportBuilder.toReport`.
@@ -537,16 +620,43 @@ pub const ReportBuilder = struct {
         self.setAudioControl2(Audio.SP_PREAMP_GAIN_6DB);
     }
 
-    /// Selects which sinks receive the L/R audio-channel sources.
+    /// Selects which sinks receive the L/R audio-channel sources,
+    /// preserving any mic-input bits set via `setMicInput`.
     pub fn setSpeakerRouting(self: *ReportBuilder, route: SpeakerRouting) void {
-        self.setAudioRouting(switch (route) {
-            .headphone_stereo => @as(u8, 0),
+        const path: u8 = switch (route) {
+            .headphone_stereo => Audio.PATH_SEL_HEADPHONES,
+            .mono_headphones => Audio.PATH_SEL_MONO_HEADPHONES,
+            .headphones_and_speaker => Audio.PATH_SEL_HEADPHONES_AND_SPEAKER,
             .internal_speaker => Audio.PATH_SEL_INTERNAL_SPEAKER,
-        });
+        };
+        const mic_bits = self.common.audio_enable_bits & ~Audio.OUTPUT_PATH_MASK;
+        self.setAudioRouting(mic_bits | path);
     }
 
-    /// Raw audio routing byte (see `Audio.PATH_SEL_*`; bits 0-3 carry mic
-    /// input flags).  Escape hatch; prefer `setSpeakerRouting`.
+    /// Microphone input configuration (force source, echo/noise cancel,
+    /// processing path) for byte 8; preserves the sink path bits set via
+    /// `setSpeakerRouting`.
+    pub fn setMicInput(self: *ReportBuilder, mic: MicInput) void {
+        var bits = self.common.audio_enable_bits & Audio.OUTPUT_PATH_MASK;
+        switch (mic.source) {
+            .automatic => {},
+            .internal => bits |= Audio.FORCE_INTERNAL_MIC,
+            .headset => bits |= Audio.FORCE_HEADSET_MIC,
+        }
+        if (mic.echo_cancel) bits |= Audio.ECHO_CANCEL;
+        if (mic.noise_cancel) bits |= Audio.NOISE_CANCEL;
+        bits |= switch (mic.processing) {
+            .both => @as(u8, 0),
+            .chat => Audio.INPUT_PATH_CHAT,
+            .asr => Audio.INPUT_PATH_ASR,
+        };
+        self.setAudioRouting(bits);
+    }
+
+    /// Raw audio routing byte (see `Audio.PATH_SEL_*`; low and high bits
+    /// carry mic input flags). Escape hatch; prefer `setSpeakerRouting`
+    /// (sinks) and `setMicInput` (mic fields), which compose without
+    /// clobbering each other.
     pub fn setAudioRouting(self: *ReportBuilder, enable_bits: u8) void {
         self.common.valid_flag0 |= Flag0.APPLY_AUDIO_CONTROL;
         self.common.audio_enable_bits = enable_bits;
@@ -554,10 +664,23 @@ pub const ReportBuilder = struct {
 
     /// Mute bits for speaker/headphones/microphone/haptics (byte 10, upper
     /// nibble; see `PowerSave.*_MUTE`). Gated by POWER_SAVE_CONTROL_ENABLE
-    /// like the kernel driver's mute handling.
+    /// like the kernel driver's mute handling. Escape hatch; prefer
+    /// `setMutes`.
     pub fn setAudioMuteBits(self: *ReportBuilder, bits: u8) void {
         self.common.valid_flag1 |= Flag1.POWER_SAVE_CONTROL_ENABLE;
         self.common.power_save_mute_control |= bits;
+    }
+
+    /// Mutes the named sinks via the upper nibble of byte 10; composes with
+    /// `setPowerSave` on the same byte. Setters OR by design, so `.{}` is a
+    /// no-op here - use `clearPowerSaveFlags` to unmute.
+    pub fn setMutes(self: *ReportBuilder, mutes: MuteSet) void {
+        var bits: u8 = 0;
+        if (mutes.microphone) bits |= PowerSave.MIC_MUTE;
+        if (mutes.speaker) bits |= PowerSave.SPEAKER_MUTE;
+        if (mutes.headphones) bits |= PowerSave.HEADPHONES_MUTE;
+        if (mutes.haptics) bits |= PowerSave.HAPTICS_MUTE;
+        if (bits != 0) self.setAudioMuteBits(bits);
     }
 
     pub fn setHeadphoneVolume(self: *ReportBuilder, volume: u8) void {
@@ -591,9 +714,17 @@ pub const ReportBuilder = struct {
     }
 
     /// Speaker preamp/attenuation control byte (see `Audio.SP_PREAMP_*`).
+    /// Escape hatch; prefer `setSpeakerPreamp` for the documented gains.
     pub fn setAudioControl2(self: *ReportBuilder, value: u8) void {
         self.common.valid_flag1 |= Flag1.AUDIO_CONTROL2_ENABLE;
         self.common.audio_control2 = value;
+    }
+
+    /// Speaker preamp gain from the documented presets (`SpeakerPreamp`).
+    /// Other bits of `audio_control2` are preserved.
+    pub fn setSpeakerPreamp(self: *ReportBuilder, gain: SpeakerPreamp) void {
+        const rest = self.common.audio_control2 & ~@as(u8, 0x07);
+        self.setAudioControl2(rest | @intFromEnum(gain));
     }
 
     // ---- lightbar and player LEDs ------------------------------------------
@@ -617,7 +748,9 @@ pub const ReportBuilder = struct {
         self.common.lightbar_setup = if (light_on) LIGHTBAR_SETUP_LIGHT_ON else LIGHTBAR_SETUP_LIGHT_OUT;
     }
 
-    /// Raw player-indicator bitmask (bit 0/bit 4 outer LEDs, bit 2 center).
+    /// Raw player-indicator bitmask (bit 0/bit 4 outer LEDs, bit 2 center,
+    /// bit 5 = instant apply, `PLAYER_LEDS_INSTANT`). Escape hatch; prefer
+    /// `setPlayerLedPattern` or `setPlayerLedsPattern`.
     pub fn setPlayerLeds(self: *ReportBuilder, mask: u8) void {
         self.common.valid_flag1 |= Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
         self.common.player_leds = mask;
@@ -628,15 +761,29 @@ pub const ReportBuilder = struct {
         self.setPlayerLeds(PLAYER_LED_PATTERNS[@min(player_number, PLAYER_LED_PATTERNS.len - 1)]);
     }
 
+    /// Named player-indicator pattern; `.off` clears the LEDs (the apply
+    /// bit 5 stays untouched). For the instant-apply bit use the raw
+    /// `setPlayerLeds`.
+    pub fn setPlayerLedPattern(self: *ReportBuilder, pattern: PlayerLedPattern) void {
+        self.setPlayerLeds(@intFromEnum(pattern));
+    }
+
     /// Brightness of the player-indicator LEDs. Firmware scale is 0..2:
     /// 0 = high (brightest), 1 = medium, 2 = low (dimmest); dualsensectl
     /// rejects values above 2. Level only - has no effect unless a player
     /// LED pattern is also set (`setPlayerLeds`/`setPlayerLedsPattern`),
-    /// and does not affect the RGB lightbar.
+    /// and does not affect the RGB lightbar. Escape hatch; prefer
+    /// `setLedBrightnessLevel`.
     pub fn setLedBrightness(self: *ReportBuilder, brightness: u8) void {
         self.common.valid_flag1 |= Flag1.PLAYER_INDICATOR_CONTROL_ENABLE;
         self.common.valid_flag2 |= FLAG2_LED_BRIGHTNESS_CONTROL_ENABLE;
         self.common.led_brightness = brightness;
+    }
+
+    /// Player-LED brightness from named levels on the inverted firmware
+    /// scale (`.high` writes 0).
+    pub fn setLedBrightnessLevel(self: *ReportBuilder, level: LedBrightness) void {
+        self.setLedBrightness(@intFromEnum(level));
     }
 
     /// Releases LED control back to the console.  Conflicts with any
@@ -656,9 +803,24 @@ pub const ReportBuilder = struct {
 
     /// Adds power-save control bits (see `PowerSave`) to the power-save/mute
     /// control byte (byte 10); gates them with POWER_SAVE_CONTROL_ENABLE.
+    /// Escape hatch; prefer `setPowerSave` (features) and `setMutes`
+    /// (mute targets).
     pub fn setPowerSaveFlags(self: *ReportBuilder, bits: u8) void {
         self.common.valid_flag1 |= Flag1.POWER_SAVE_CONTROL_ENABLE;
         self.common.power_save_mute_control |= bits;
+    }
+
+    /// Powers down the named idle features via the lower nibble of byte 10;
+    /// `true` disables the feature to save power. Composes with `setMutes`
+    /// on the same byte; like all setters this ORs, so use
+    /// `clearPowerSaveFlags` to re-enable features.
+    pub fn setPowerSave(self: *ReportBuilder, disabled: PowerSaveSet) void {
+        var bits: u8 = 0;
+        if (disabled.touch) bits |= PowerSave.TOUCH;
+        if (disabled.motion) bits |= PowerSave.MOTION;
+        if (disabled.haptics) bits |= PowerSave.HAPTICS;
+        if (disabled.audio) bits |= PowerSave.AUDIO;
+        if (bits != 0) self.setPowerSaveFlags(bits);
     }
 
     /// Explicit power-save reset: clears every PowerSave bit while keeping
@@ -691,6 +853,8 @@ pub const ReportBuilder = struct {
     }
 
     /// Extra haptics configuration bits applied verbatim to haptics_flags.
+    /// The only publicly documented bit is the low-pass filter; prefer
+    /// `setHapticLowPassFilter`.
     pub fn setHapticsFlags(self: *ReportBuilder, bits: u8) void {
         self.common.haptics_flags |= bits;
     }
@@ -1214,4 +1378,126 @@ test "input state decoding" {
     try std.testing.expectEqual(proto.BatteryStatus.charging, state.battery_status);
     try std.testing.expect(state.headphone);
     try std.testing.expect(state.mic_mute_led);
+}
+
+test "friendly mute and power-save setters map to raw bits" {
+    var b: ReportBuilder = .{};
+    b.setMutes(.{ .microphone = true, .headphones = true });
+    b.setPowerSave(.{ .motion = true, .audio = true });
+
+    const report = try b.toReport();
+    try std.testing.expectEqual(
+        PowerSave.MIC_MUTE | PowerSave.HEADPHONES_MUTE | PowerSave.MOTION | PowerSave.AUDIO,
+        report.common.power_save_mute_control,
+    );
+    try std.testing.expectEqual(Flag1.POWER_SAVE_CONTROL_ENABLE, report.common.valid_flag1);
+
+    // All targets round-trip to the matching PowerSave constants.
+    var all: ReportBuilder = .{};
+    all.setMutes(.{ .microphone = true, .speaker = true, .headphones = true, .haptics = true });
+    all.setPowerSave(.{ .touch = true, .motion = true, .haptics = true, .audio = true });
+    const full = try all.toReport();
+    try std.testing.expectEqual(
+        PowerSave.MIC_MUTE | PowerSave.SPEAKER_MUTE | PowerSave.HEADPHONES_MUTE |
+            PowerSave.HAPTICS_MUTE | PowerSave.TOUCH | PowerSave.MOTION |
+            PowerSave.HAPTICS | PowerSave.AUDIO,
+        full.common.power_save_mute_control,
+    );
+}
+
+test "empty friendly mute and power-save sets are no-ops" {
+    var b: ReportBuilder = .{};
+    b.setMutes(.{});
+    b.setPowerSave(.{});
+    const report = try b.toReport();
+    try std.testing.expectEqual(@as(u8, 0), report.common.power_save_mute_control);
+    try std.testing.expectEqual(@as(u8, 0), report.common.valid_flag1);
+}
+
+test "player LED pattern enum matches raw masks" {
+    // Same values as PLAYER_LED_PATTERNS / dualsensectl's player ids.
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[0], @intFromEnum(PlayerLedPattern.off));
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[1], @intFromEnum(PlayerLedPattern.center));
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[2], @intFromEnum(PlayerLedPattern.inner_pair));
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[3], @intFromEnum(PlayerLedPattern.center_and_outer_pair));
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[4], @intFromEnum(PlayerLedPattern.inner_and_outer_pair));
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[5], @intFromEnum(PlayerLedPattern.all));
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[6], @intFromEnum(PlayerLedPattern.outer_pair));
+    try std.testing.expectEqual(PLAYER_LED_PATTERNS[7], @intFromEnum(PlayerLedPattern.inner_three));
+
+    var b: ReportBuilder = .{};
+    b.setPlayerLedPattern(.all);
+    const report = try b.toReport();
+    try std.testing.expectEqual(@as(u8, 0x1F), report.common.player_leds);
+    try std.testing.expectEqual(Flag1.PLAYER_INDICATOR_CONTROL_ENABLE, report.common.valid_flag1);
+}
+
+test "mic input config composes with speaker routing" {
+    var b: ReportBuilder = .{};
+    b.setSpeakerRouting(.internal_speaker);
+    b.setMicInput(.{ .source = .headset, .echo_cancel = true, .noise_cancel = true, .processing = .chat });
+    var report = try b.toReport();
+    try std.testing.expectEqual(
+        Audio.PATH_SEL_INTERNAL_SPEAKER | Audio.FORCE_HEADSET_MIC |
+            Audio.ECHO_CANCEL | Audio.NOISE_CANCEL | Audio.INPUT_PATH_CHAT,
+        report.common.audio_enable_bits,
+    );
+    try std.testing.expectEqual(Flag0.APPLY_AUDIO_CONTROL, report.common.valid_flag0);
+
+    // Reverse order: routing keeps the mic configuration.
+    var c: ReportBuilder = .{};
+    c.setMicInput(.{ .source = .internal, .processing = .asr });
+    c.setSpeakerRouting(.mono_headphones);
+    report = try c.toReport();
+    try std.testing.expectEqual(
+        Audio.PATH_SEL_MONO_HEADPHONES | Audio.FORCE_INTERNAL_MIC | Audio.INPUT_PATH_ASR,
+        report.common.audio_enable_bits,
+    );
+
+    // Remaining documented sink routes.
+    var d: ReportBuilder = .{};
+    d.setSpeakerRouting(.headphones_and_speaker);
+    report = try d.toReport();
+    try std.testing.expectEqual(Audio.PATH_SEL_HEADPHONES_AND_SPEAKER, report.common.audio_enable_bits);
+
+    // Default mic config only rewrites the mic fields.
+    var e: ReportBuilder = .{};
+    e.setSpeakerRouting(.internal_speaker);
+    e.setMicInput(.{});
+    report = try e.toReport();
+    try std.testing.expectEqual(Audio.PATH_SEL_INTERNAL_SPEAKER, report.common.audio_enable_bits);
+}
+
+test "speaker preamp enum covers documented gain values only" {
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(SpeakerPreamp.off));
+    try std.testing.expectEqual(Audio.SP_PREAMP_GAIN_6DB, @intFromEnum(SpeakerPreamp.boost_6db));
+
+    var b: ReportBuilder = .{};
+    b.setSpeakerPreamp(.boost_6db);
+    var report = try b.toReport();
+    try std.testing.expectEqual(Audio.SP_PREAMP_GAIN_6DB, report.common.audio_control2);
+    try std.testing.expectEqual(Flag1.AUDIO_CONTROL2_ENABLE, report.common.valid_flag1);
+
+    // Undocumented bits written via the escape hatch survive a friendly
+    // gain change; only the 3-bit gain field is replaced.
+    b.setAudioControl2(0x10 | 0x05);
+    b.setSpeakerPreamp(.off);
+    report = try b.toReport();
+    try std.testing.expectEqual(@as(u8, 0x10), report.common.audio_control2);
+}
+
+test "led brightness levels map to firmware scale" {
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(LedBrightness.high));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(LedBrightness.medium));
+    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(LedBrightness.low));
+
+    var b: ReportBuilder = .{};
+    b.setLedBrightnessLevel(.low);
+    const report = try b.toReport();
+    try std.testing.expectEqual(@as(u8, 2), report.common.led_brightness);
+    try std.testing.expectEqual(
+        Flag1.PLAYER_INDICATOR_CONTROL_ENABLE,
+        report.common.valid_flag1,
+    );
+    try std.testing.expectEqual(FLAG2_LED_BRIGHTNESS_CONTROL_ENABLE, report.common.valid_flag2);
 }

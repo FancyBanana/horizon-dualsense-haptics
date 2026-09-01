@@ -130,9 +130,21 @@ pub const Audio = struct {
     /// R -> headphone right, internal speaker unrouted/muted.
     pub const PATH_SEL_HEADPHONES: u8 = 0x00;
 
+    /// Path select 1 (dualsensectl "monoheadphone"): the L source feeds
+    /// both headphone sinks; internal speaker unrouted.
+    pub const PATH_SEL_MONO_HEADPHONES: u8 = 0x10;
+
+    /// Path select 2 (dualsensectl "both"): L source on both headphone
+    /// sinks, R source on the internal speaker.
+    pub const PATH_SEL_HEADPHONES_AND_SPEAKER: u8 = 0x20;
+
     /// Path select 3: HP-left/HP-right sinks muted, R source routed to the
     /// internal mono speaker.
     pub const PATH_SEL_INTERNAL_SPEAKER: u8 = 0x30;
+
+    /// Mask of the sink path-select field (bits 4-5 of `audio_enable_bits`;
+    /// kernel `DS_OUTPUT_AUDIO_FLAGS_OUTPUT_PATH_SEL`).
+    pub const OUTPUT_PATH_MASK: u8 = 0x30;
 
     /// Byte 38: speaker preamp gain +6 dB (bits 0-2 of audio_control2).
     pub const SP_PREAMP_GAIN_6DB: u8 = 0x02;
